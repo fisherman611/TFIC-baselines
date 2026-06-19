@@ -25,6 +25,9 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from runtime_utils import load_runtime_env
+from wandb_utils import collect_ppl_wandb_metrics, log_to_wandb, wandb_enabled_from_env
+
 
 # --------------------------------------------------------------------------
 # Test-set token streams. We tokenize the whole split once and chunk it.
@@ -124,6 +127,7 @@ def perplexity(model, input_ids, seqlen, device):
 
 
 def main():
+    load_runtime_env()
     p = argparse.ArgumentParser(description="WikiText-2 / C4 perplexity.")
     p.add_argument("--model-path", required=True,
                    help="HF dir (quantized checkpoint or base model).")
@@ -137,6 +141,12 @@ def main():
                    help="dir for cached C4 token windows.")
     p.add_argument("--out", type=str, default=None,
                    help="JSON path; default <model-path>/ppl.json")
+    p.add_argument("--use-wandb", action="store_true", default=wandb_enabled_from_env(False),
+                   help="log perplexity metrics to Weights & Biases.")
+    p.add_argument("--no-wandb", action="store_false", dest="use_wandb")
+    p.add_argument("--wandb-project", type=str, default=os.getenv("WANDB_PROJECT", "tfic-baselines"))
+    p.add_argument("--wandb-entity", type=str, default=os.getenv("WANDB_ENTITY"))
+    p.add_argument("--wandb-run-name", type=str, default=None)
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -173,6 +183,26 @@ def main():
     summary = " | ".join(f"{k}={v:.4f}" for k, v in results["ppl"].items())
     print(f"\nSUMMARY  {os.path.basename(args.model_path.rstrip('/'))}  {summary}")
     print(f"Wrote {out}")
+
+    if args.use_wandb:
+        run_name = args.wandb_run_name or f"ppl_{os.path.basename(args.model_path.rstrip('/'))}"
+        log_to_wandb(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            run_name=run_name,
+            metrics=collect_ppl_wandb_metrics(results),
+            config={
+                "model_path": args.model_path,
+                "datasets": args.datasets,
+                "seqlen": args.seqlen,
+                "c4_samples": args.c4_samples,
+                "seed": args.seed,
+                "cache_dir": args.cache_dir,
+                "out": out,
+            },
+            tags=["eval:ppl"],
+            summary={"model_path": args.model_path, "ppl_json": out},
+        )
 
 
 if __name__ == "__main__":

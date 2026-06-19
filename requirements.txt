@@ -7,3 +7,4 @@ numpy
 lm-eval
 python-dotenv
 pytest
+wandb

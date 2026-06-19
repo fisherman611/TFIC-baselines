@@ -17,6 +17,7 @@ run_full_baselines.sh   orchestrate full experiments
 generate_awq_scales.py  generate AWQ per-layer scales
 eval_ppl.py             evaluate WikiText2 / C4 perplexity
 lm_eval_runner.py       run lm-evaluation-harness
+log_wandb_results.py    log saved PPL/lm-eval JSON files to W&B
 ```
 
 ## Implemented Methods
@@ -62,6 +63,16 @@ For gated Hugging Face models such as LLaMA, put your token in `.env`:
 echo 'HF_TOKEN=your_hf_token_here' > .env
 ```
 
+Optional W&B logging also reads `.env`:
+
+```bash
+cat >> .env <<'EOF'
+WANDB_API_KEY=your_wandb_key_here
+WANDB_PROJECT=tfic-baselines
+WANDB_ENTITY=your_entity_optional
+EOF
+```
+
 Sanity check:
 
 ```bash
@@ -75,6 +86,13 @@ skips downstream `lm-eval`:
 
 ```bash
 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0 \
+  uv run bash run_full_baselines.sh
+```
+
+`run_full_baselines.sh` logs to W&B by default. To disable W&B for a debug run:
+
+```bash
+RUN_WANDB=0 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0 \
   uv run bash run_full_baselines.sh
 ```
 
@@ -203,6 +221,36 @@ uv run python eval_ppl.py \
   --seed 1234
 ```
 
+Evaluate PPL and log it to W&B:
+
+```bash
+uv run python eval_ppl.py \
+  --model-path ./quantized_models/baselines_llama31_8b/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
+  --datasets wikitext2 c4 \
+  --seqlen 2048 \
+  --c4-samples 128 \
+  --seed 1234 \
+  --use-wandb \
+  --wandb-run-name llama31_8b_vanilla_asymmetric_tfic_ppl
+```
+
+Log existing result JSON files to W&B:
+
+```bash
+uv run python log_wandb_results.py \
+  --use-wandb \
+  --run-name llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --checkpoint-dir ./quantized_models/baselines_llama31_8b/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
+  --ppl-json ./results/baselines_llama31_8b/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128_ppl.json \
+  --lm-eval-summary-json ./results/baselines_llama31_8b/lm_eval/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128_summary.json \
+  --grid vanilla \
+  --scheme asymmetric \
+  --assignment tfic \
+  --bits 3 \
+  --group-size 128
+```
+
 ## Legacy EigenFlip Runner
 
 The older runner is still available:
@@ -226,4 +274,5 @@ PYTHONPATH=. uv run python eval_ppl.py \
 - GPTQ and TFIC optimize weighted reconstruction energy, not plain MSE.
 - Final model quality should be compared with PPL and downstream `lm-eval`.
 - AWQ without `AWQ_SCALES_PT` is skipped by `run_full_baselines.sh`.
+- `run_full_baselines.sh` logs W&B by default. Use `RUN_WANDB=0` to disable it, or `--use-wandb` for direct Python commands.
 - Heavy GPU runs should be launched only after model access and disk space are ready.

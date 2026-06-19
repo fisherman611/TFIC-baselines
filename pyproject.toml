@@ -13,6 +13,7 @@ dependencies = [
   "torch",
   "tqdm",
   "transformers",
+  "wandb",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
 [project.scripts]
 generate-awq-scales = "generate_awq_scales:main"
 lm-eval-smoke = "lm_eval_smoke:main"
+log-wandb-results = "log_wandb_results:main"
 quantize-baseline = "run_quantization_baseline:main"
 
 [tool.pytest.ini_options]

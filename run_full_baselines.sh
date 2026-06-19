@@ -50,7 +50,11 @@ AWQ_SCALES_PT_SYMMETRIC=${AWQ_SCALES_PT_SYMMETRIC:-}
 
 RUN_PPL=${RUN_PPL:-1}
 RUN_LM_EVAL=${RUN_LM_EVAL:-1}
+RUN_WANDB=${RUN_WANDB:-${USE_WANDB:-1}}
 DELETE_CHECKPOINT=${DELETE_CHECKPOINT:-0}
+
+WANDB_PROJECT=${WANDB_PROJECT:-tfic-baselines}
+WANDB_ENTITY=${WANDB_ENTITY:-}
 
 LM_EVAL_TASK_PRESET=${LM_EVAL_TASK_PRESET:-extended}
 LM_EVAL_LIMIT=${LM_EVAL_LIMIT:-}
@@ -74,7 +78,7 @@ echo "assignments: $ASSIGNMENTS"
 echo "bits/group: W${BITS} g${GROUP_SIZE}"
 echo "calibration: ${CALIB_DATASET}/${N_CALIB}/${SEQLEN} seed=${CALIB_SEED}"
 echo "eval c4: samples=${C4_SAMPLES} seed=${EVAL_SEED}"
-echo "run ppl: $RUN_PPL | run lm-eval: $RUN_LM_EVAL | delete checkpoints: $DELETE_CHECKPOINT"
+echo "run ppl: $RUN_PPL | run lm-eval: $RUN_LM_EVAL | wandb: $RUN_WANDB | delete checkpoints: $DELETE_CHECKPOINT"
 
 for GRID in $GRIDS; do
   for SCHEME in $SCHEMES; do
@@ -196,6 +200,37 @@ print(f"lm-eval summary -> {summary_path}")
 PY
       else
         echo ">>> [3/3] lm-eval skipped"
+      fi
+
+      if [[ "$RUN_WANDB" == "1" ]]; then
+        echo ">>> [wandb] logging metrics"
+        WANDB_ARGS=(
+          --use-wandb
+          --wandb-project "$WANDB_PROJECT"
+          --run-name "$RUN_NAME"
+          --model-path "$MODEL_PATH"
+          --checkpoint-dir "$CKPT_DIR"
+          --grid "$GRID"
+          --scheme "$SCHEME"
+          --assignment "$ASSIGNMENT"
+          --bits "$BITS"
+          --group-size "$GROUP_SIZE"
+          --calib-dataset "$CALIB_DATASET"
+          --n-calib "$N_CALIB"
+          --seqlen "$SEQLEN"
+        )
+        if [[ -n "$WANDB_ENTITY" ]]; then
+          WANDB_ARGS+=(--wandb-entity "$WANDB_ENTITY")
+        fi
+        if [[ -f "$RESULT_DIR/${RUN_NAME}_ppl.json" ]]; then
+          WANDB_ARGS+=(--ppl-json "$RESULT_DIR/${RUN_NAME}_ppl.json")
+        fi
+        if [[ -f "$RESULT_DIR/lm_eval/${RUN_NAME}_summary.json" ]]; then
+          WANDB_ARGS+=(--lm-eval-summary-json "$RESULT_DIR/lm_eval/${RUN_NAME}_summary.json")
+        fi
+        PYTHONPATH=. python log_wandb_results.py "${WANDB_ARGS[@]}"
+      else
+        echo ">>> [wandb] skipped"
       fi
 
       if [[ "$DELETE_CHECKPOINT" == "1" ]]; then
