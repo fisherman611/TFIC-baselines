@@ -502,3 +502,35 @@ python eval_ppl.py `
   --c4-samples 128 `
   --seed 1234
 ```
+
+### Legacy EigenFlip Runner
+
+The older `eigenflip/run_fast.py` entrypoint also supports both schemes now:
+
+```powershell
+python -m eigenflip.run_fast `
+  --model-path <hf-model-or-local-path> `
+  --output-dir ./quantized_models/eigenflip_3bit `
+  --base rtn `
+  --scheme asymmetric `
+  --encoder tfic_fast `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --layer-batch-size 4 `
+  --eig-on-cpu
+```
+
+The saved checkpoint path is:
+
+```text
+<output-dir>/<base>_<scheme>_<encoder>
+```
+
+For example:
+
+```text
+./quantized_models/eigenflip_3bit/rtn_asymmetric_tfic_fast
+```

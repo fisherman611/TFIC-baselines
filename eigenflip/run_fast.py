@@ -34,6 +34,34 @@ NEED_H = {"none": False, "clc": False,
 KEEP_SIGMA = {"gptq", "shr_gptq_cov", "shr_gptq_2m", "tfic", "tfic_fast"}
 
 
+@torch.no_grad()
+def _shift_state_to_non_negative_codes(state: IntegerQuantizedTensorState
+                                       ) -> IntegerQuantizedTensorState:
+    """Represent signed grids with non-negative codes for legacy encoders.
+
+    Several older flip encoders clamp updates to [0, max_int]. Shifting signed
+    symmetric codes and zero-points by the same offset preserves dequantization:
+    (q + shift) - (zp + shift) == q - zp.
+    """
+    if state.min_int >= 0:
+        return state
+
+    shift = -state.min_int
+    return IntegerQuantizedTensorState(
+        float_weights=state.float_weights,
+        pre_round=state.pre_round + shift,
+        integer_weights=state.integer_weights + shift,
+        scale=state.scale,
+        zero_point=state.zero_point + shift,
+        max_int=state.max_int + shift,
+        min_int=0,
+        in_features=state.in_features,
+        padded_in_features=state.padded_in_features,
+        original_dtype=state.original_dtype,
+        group_size=state.group_size,
+    )
+
+
 def build_encoder(name, args):
     if name == "none": return IdentityEncoder()
     if name == "clc": return make_clc(args.clc_knee, args.clc_budget, use_knee=False)
@@ -60,6 +88,8 @@ def main():
     p.add_argument("--model-path", default="./models/Mistral-7B-v0.3")
     p.add_argument("--output-dir", default="./quantized_models/eigenflip")
     p.add_argument("--base", default="rtn", choices=["rtn", "awq"])
+    p.add_argument("--scheme", default="asymmetric",
+                   choices=["asymmetric", "symmetric"])
     p.add_argument("--encoder", required=True, choices=list(NEED_H.keys()))
     p.add_argument("--bits", type=int, default=3, choices=[2, 3, 4, 8])
     p.add_argument("--group-size", type=int, default=128)
@@ -130,17 +160,32 @@ def main():
     def callback(name, module, stats):
         W = module.weight.data
         if args.base == "rtn":
-            state = IntegerQuantizedTensorState.from_rtn(W, args.bits, args.group_size)
+            state = IntegerQuantizedTensorState.from_rtn(
+                W,
+                args.bits,
+                args.group_size,
+                scheme=args.scheme,
+            )
         else:
             sc = awq_scales.get(name)
             if sc is None:
                 raise KeyError(f"no AWQ scales for {name}")
-            state = IntegerQuantizedTensorState.from_awq(W, sc, args.bits, args.group_size)
+            state = IntegerQuantizedTensorState.from_awq(
+                W,
+                sc,
+                args.bits,
+                args.group_size,
+                scheme=args.scheme,
+            )
+        state = _shift_state_to_non_negative_codes(state)
         corrected, _ = enc.apply(state, stats)
         module.weight.data = corrected.to(module.weight.dtype)
         del state, corrected
 
-    print(f"base={args.base} encoder={args.encoder} need_H={need_H} k={args.k}")
+    print(
+        f"base={args.base} scheme={args.scheme} encoder={args.encoder} "
+        f"need_H={need_H} k={args.k}"
+    )
     collect_and_encode_awq_style(
         model, tok, calib, device,
         need_H=need_H, k=args.k, eps=args.eps, callback=callback,
@@ -148,7 +193,7 @@ def main():
         keep_sigma=keep_sigma, skip_lm_head=True, eig_on_cpu=args.eig_on_cpu,
         max_length=args.seqlen)
 
-    out = os.path.join(args.output_dir, f"{args.base}_{args.encoder}")
+    out = os.path.join(args.output_dir, f"{args.base}_{args.scheme}_{args.encoder}")
     os.makedirs(out, exist_ok=True)
     model.save_pretrained(out)
     tok.save_pretrained(out)

@@ -4,6 +4,7 @@ set -euo pipefail
 #MODEL_PATH=/home/DATA/prometheus/anh/.cache/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b
 MODEL_PATH=/home/DATA/prometheus/anh/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B/snapshots/d149729398750b98c0af14eb82c78cfe92750796 
 OUTPUT_DIR=./quantized_models/eigenflip_3bit
+SCHEME=asymmetric
 LOG_DIR=./logs
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/eigenflip_3bit_$(date +%Y%m%d_%H%M%S).log"
@@ -12,7 +13,7 @@ echo "=== run started $(date) ==="
 echo "log: $LOG_FILE"
 #none clc eigenflip eigenflip_solve gptq tfic
 for ENC in  tfic_fast gptq; do
-  CELL_DIR="$OUTPUT_DIR/rtn_${ENC}"
+  CELL_DIR="$OUTPUT_DIR/rtn_${SCHEME}_${ENC}"
 
   # layer-batch-size per encoder: Gram-heavy ones need smaller batches / cpu eigh
   case "$ENC" in
@@ -26,12 +27,12 @@ for ENC in  tfic_fast gptq; do
   echo "# encoder=$ENC  lbs=$LBS  ($(date))"
   echo "############################################################"
 
-  echo ">>> [1/3] quantizing rtn+$ENC"
+  echo ">>> [1/3] quantizing rtn+$SCHEME+$ENC"
   PYTHONPATH=. python eigenflip/run_fast.py \
     --model-path "$MODEL_PATH" \
     --output-dir "$OUTPUT_DIR" \
     --bits 3 --group-size 128 --k 16 \
-    --base rtn --encoder "$ENC" \
+    --base rtn --scheme "$SCHEME" --encoder "$ENC" \
     --calib-dataset c4 --n-calib 128 --seqlen 2048 \
     --layer-batch-size $LBS $EXTRA
 
@@ -46,13 +47,13 @@ for ENC in  tfic_fast gptq; do
     --datasets wikitext2 c4 --seqlen 2048
 
   echo ">>> [2.5] preserving ppl.json"
-  cp "$CELL_DIR/ppl.json" "$OUTPUT_DIR/rtn_${ENC}_ppl.json" 2>/dev/null || true
+  cp "$CELL_DIR/ppl.json" "$OUTPUT_DIR/rtn_${SCHEME}_${ENC}_ppl.json" 2>/dev/null || true
 
   echo ">>> [3/3] deleting $CELL_DIR"
   rm -rf "$CELL_DIR"
-  echo "<<< done rtn+$ENC"
+  echo "<<< done rtn+$SCHEME+$ENC"
 done
 
 echo
 echo "=== all cells done $(date) ==="
-echo "preserved ppl files: $OUTPUT_DIR/rtn_*_ppl.json"
+echo "preserved ppl files: $OUTPUT_DIR/rtn_${SCHEME}_*_ppl.json"

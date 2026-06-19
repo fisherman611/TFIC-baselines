@@ -13,7 +13,8 @@ E(s) = Tr(R G R^T),   R = (Wint - zp)·scale - Wf,   G = H = Σ + μμᵀ
 via spin-flip moves (single-flip descent) + cluster tunnelling (group flip),
 inspired by the transverse-field Ising model.
 
-> **Base = RTN, NOT AWQ.** `run_all.sh` invokes `--base rtn --encoder tfic_fast`.
+> **Base = RTN, NOT AWQ.** `run_all.sh` invokes
+> `--base rtn --scheme asymmetric --encoder tfic_fast`.
 > AWQ is only an alternative base (`--base awq`, requires `--awq-scales-pt`) and
 > is **not** used here. Note the "AWQ-STYLE batched" comment in `run_fast.py`
 > refers only to the *calibration schedule* (batch N layers, calibrate once per
@@ -43,9 +44,9 @@ bash run_all.sh
 ```
 
 `run_all.sh` does, for each encoder: (1) quantize RTN+encoder via `run_fast.py`,
-(2) score PPL via `eval_ppl.py`, (3) save `rtn_<enc>_ppl.json` then delete the
-checkpoint. Edit the `for ENC in ...` line to run multiple encoders. TFIC uses
-`LBS=4` and `--eig-on-cpu` (Gram-heavy).
+(2) score PPL via `eval_ppl.py`, (3) save `rtn_<scheme>_<enc>_ppl.json` then
+delete the checkpoint. Edit the `SCHEME=...` and `for ENC in ...` lines to run
+multiple cells. TFIC uses `LBS=4` and `--eig-on-cpu` (Gram-heavy).
 
 Run a single cell directly:
 
@@ -54,12 +55,12 @@ PYTHONPATH=. python eigenflip/run_fast.py \
   --model-path <Llama-3.1-8B> \
   --output-dir ./quantized_models/eigenflip_3bit \
   --bits 3 --group-size 128 --k 16 \
-  --base rtn --encoder tfic_fast \
+  --base rtn --scheme asymmetric --encoder tfic_fast \
   --calib-dataset c4 --n-calib 128 --seqlen 2048 \
   --layer-batch-size 4 --eig-on-cpu
 
 PYTHONPATH=. python eval_ppl.py \
-  --model-path ./quantized_models/eigenflip_3bit/rtn_tfic_fast \
+  --model-path ./quantized_models/eigenflip_3bit/rtn_asymmetric_tfic_fast \
   --datasets wikitext2 c4 --seqlen 2048
 ```
 

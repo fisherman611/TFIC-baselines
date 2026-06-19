@@ -28,7 +28,7 @@ import torch
 
 
 @torch.no_grad()
-def _groupwise_asym_quant(W, bits, group_size):
+def _groupwise_quant(W, bits, group_size, scheme="asymmetric"):
     C, in_f = W.shape
     n_groups = (in_f + group_size - 1) // group_size
     pin = n_groups * group_size
@@ -38,20 +38,39 @@ def _groupwise_asym_quant(W, bits, group_size):
     else:
         Wp = W
     Wg = Wp.reshape(C, n_groups, group_size)
-    wmin = Wg.min(2, keepdim=True)[0]
-    wmax = Wg.max(2, keepdim=True)[0]
-    mi = 2 ** bits - 1
-    sc = ((wmax - wmin) / mi).clamp_min(1e-8)
-    zp = torch.round(-wmin / sc).clamp(0, mi)
-    q = torch.round(Wg / sc + zp).clamp(0, mi)
-    dq = ((q - zp) * sc).reshape(C, pin)
+    if scheme == "asymmetric":
+        wmin = Wg.min(2, keepdim=True)[0]
+        wmax = Wg.max(2, keepdim=True)[0]
+        qmin = 0
+        qmax = 2 ** bits - 1
+        sc = ((wmax - wmin) / qmax).clamp_min(1e-8)
+        zp = torch.round(-wmin / sc).clamp(qmin, qmax)
+        q = torch.round(Wg / sc + zp).clamp(qmin, qmax)
+        dq = ((q - zp) * sc).reshape(C, pin)
+    elif scheme == "symmetric":
+        if bits < 2:
+            raise ValueError("symmetric AWQ scale search requires bits >= 2")
+        qmin = -(2 ** (bits - 1))
+        qmax = 2 ** (bits - 1) - 1
+        absmax = Wg.abs().amax(2, keepdim=True)
+        sc = (absmax / qmax).clamp_min(1e-8)
+        q = torch.round(Wg / sc).clamp(qmin, qmax)
+        dq = (q * sc).reshape(C, pin)
+    else:
+        raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
     return dq[:, :in_f] if pin > in_f else dq
+
+
+@torch.no_grad()
+def _groupwise_asym_quant(W, bits, group_size):
+    return _groupwise_quant(W, bits, group_size, scheme="asymmetric")
 
 
 @torch.no_grad()
 def compute_awq_scales(W: torch.Tensor, salience_l2: torch.Tensor,
                        X_sample: torch.Tensor, bits: int, group_size: int,
-                       n_grid: int = 20) -> tuple[torch.Tensor, float, float]:
+                       n_grid: int = 20,
+                       scheme: str = "asymmetric") -> tuple[torch.Tensor, float, float]:
     """
     AWQ grid search for one layer.
 
@@ -60,6 +79,8 @@ def compute_awq_scales(W: torch.Tensor, salience_l2: torch.Tensor,
     X_sample    [m, d]              a small activation sample for the MSE objective
     Returns (scales [d], best_alpha, best_error).
     """
+    if scheme not in {"asymmetric", "symmetric"}:
+        raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
     device = W.device
     dtype = W.dtype
     sal = salience_l2.to(device=device, dtype=torch.float32)
@@ -72,7 +93,7 @@ def compute_awq_scales(W: torch.Tensor, salience_l2: torch.Tensor,
         alpha = g / n_grid
         scales = sal.pow(alpha).clamp_min(1e-5).to(dtype)
         W_scaled = W * scales.unsqueeze(0)
-        W_q = _groupwise_asym_quant(W_scaled, bits, group_size)
+        W_q = _groupwise_quant(W_scaled, bits, group_size, scheme=scheme)
         X_comp = Xs / scales.unsqueeze(0)
         Y_q = X_comp @ W_q.t()
         err = (Y_orig - Y_q).pow(2).mean().item()
