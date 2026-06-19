@@ -5,16 +5,15 @@ from __future__ import annotations
 import torch
 
 from eigenflip.quantization.state import IntegerQuantizedTensorState
-from grid_baselines import VanillaQuantizationGrid
 
 
 @torch.no_grad()
-def state_from_vanilla_grid(
-    grid: VanillaQuantizationGrid,
+def state_from_grid(
+    grid,
     *,
     non_negative_codes: bool = False,
 ) -> IntegerQuantizedTensorState:
-    """Convert a vanilla grid to the state consumed by assignment encoders.
+    """Convert a fixed quantization grid to assignment-encoder state.
 
     Some legacy encoders assume code updates live in ``[0, max_int]``. For a
     signed symmetric grid, ``non_negative_codes=True`` shifts both integer codes
@@ -46,3 +45,6 @@ def state_from_vanilla_grid(
         original_dtype=grid.original_dtype,
         group_size=grid.group_size,
     )
+
+
+state_from_vanilla_grid = state_from_grid

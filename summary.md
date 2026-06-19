@@ -303,4 +303,202 @@ W_hat, info = TFICAssignment().apply_to_grid(grid, stats)
 ```
 
 Current note: the wrapped EigenFlip TFIC implementation assumes non-negative
-integer codes, so the smoke test uses the asymmetric vanilla grid.
+integer code updates internally. Signed symmetric grids are shifted to an
+equivalent non-negative representation by `assignment_methods/state_adapter.py`;
+the represented dequantized weights are unchanged.
+
+---
+
+## Real Model Runner
+
+Status: implemented in `run_quantization_baseline.py`.
+
+This runner uses the modular baseline folders directly:
+
+```text
+grid_baselines      -> builds the quantization grid
+assignment_methods  -> assigns integer codes on that grid
+```
+
+### Calibration And Evaluation Protocol
+
+Calibration is loaded in `calibration_utils.py`.
+
+Default real-run calibration:
+
+```text
+dataset: C4 train shard
+source: https://huggingface.co/datasets/allenai/c4/resolve/main/en/c4-train.00000-of-01024.json.gz
+samples: 128
+sequence length: 2048
+sampling: random 2048-token window inside each long document
+cache: ./calibration_cache
+```
+
+Perplexity evaluation is loaded in `eval_ppl.py`.
+
+Evaluation datasets:
+
+```text
+WikiText2: wikitext-2-raw-v1, split=test
+C4: allenai/c4 validation shard en/c4-validation.00000-of-00008.json.gz
+```
+
+So the normal protocol is:
+
+```text
+calibrate on C4 train windows
+evaluate on WikiText2 test
+evaluate on C4 validation windows
+```
+
+Use a different C4 eval seed from the calibration seed when you want to make
+the separation explicit.
+
+### Quantization Commands
+
+Vanilla + RTN:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid vanilla `
+  --scheme asymmetric `
+  --assignment rtn `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --run-name vanilla_asym_rtn_w3g128_c4n128
+```
+
+Vanilla + GPTQ:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid vanilla `
+  --scheme asymmetric `
+  --assignment gptq `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --layer-batch-size 4 `
+  --eig-on-cpu `
+  --run-name vanilla_asym_gptq_w3g128_c4n128
+```
+
+Vanilla + TFIC:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid vanilla `
+  --scheme asymmetric `
+  --assignment tfic `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --layer-batch-size 4 `
+  --eig-on-cpu `
+  --run-name vanilla_asym_tfic_w3g128_c4n128
+```
+
+AWQ + RTN:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid awq `
+  --awq-scales-pt <path-to-awq-scales.pt> `
+  --scheme asymmetric `
+  --assignment rtn `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --run-name awq_asym_rtn_w3g128_c4n128
+```
+
+AWQ + GPTQ:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid awq `
+  --awq-scales-pt <path-to-awq-scales.pt> `
+  --scheme asymmetric `
+  --assignment gptq `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --layer-batch-size 4 `
+  --eig-on-cpu `
+  --run-name awq_asym_gptq_w3g128_c4n128
+```
+
+AWQ + TFIC:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid awq `
+  --awq-scales-pt <path-to-awq-scales.pt> `
+  --scheme asymmetric `
+  --assignment tfic `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --layer-batch-size 4 `
+  --eig-on-cpu `
+  --run-name awq_asym_tfic_w3g128_c4n128
+```
+
+### PPL Evaluation Commands
+
+Evaluate a saved checkpoint on WikiText2 test and C4 validation:
+
+```powershell
+python eval_ppl.py `
+  --model-path ./quantized_models/baselines/vanilla_asym_tfic_w3g128_c4n128 `
+  --datasets wikitext2 c4 `
+  --seqlen 2048 `
+  --c4-samples 128 `
+  --seed 1234
+```
+
+Run only WikiText2:
+
+```powershell
+python eval_ppl.py `
+  --model-path ./quantized_models/baselines/vanilla_asym_tfic_w3g128_c4n128 `
+  --datasets wikitext2 `
+  --seqlen 2048
+```
+
+Run only C4 validation:
+
+```powershell
+python eval_ppl.py `
+  --model-path ./quantized_models/baselines/vanilla_asym_tfic_w3g128_c4n128 `
+  --datasets c4 `
+  --seqlen 2048 `
+  --c4-samples 128 `
+  --seed 1234
+```

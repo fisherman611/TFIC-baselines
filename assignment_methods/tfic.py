@@ -6,13 +6,12 @@ import torch
 
 from eigenflip.encoders.tfic_fast import TFICEncoder
 from eigenflip.statistics.trust_region import LayerStats
-from grid_baselines import VanillaQuantizationGrid
 
-from .state_adapter import state_from_vanilla_grid
+from .state_adapter import state_from_grid
 
 
 class TFICAssignment:
-    """TFIC assignment on a fixed vanilla grid.
+    """TFIC assignment on a fixed quantization grid.
 
     The current EigenFlip TFIC implementation assumes non-negative integer code
     updates. This wrapper shifts signed symmetric grids to an equivalent
@@ -53,10 +52,10 @@ class TFICAssignment:
     @torch.no_grad()
     def apply_to_grid(
         self,
-        grid: VanillaQuantizationGrid,
+        grid,
         stats: LayerStats,
     ) -> tuple[torch.Tensor, dict]:
-        state = state_from_vanilla_grid(grid, non_negative_codes=True)
+        state = state_from_grid(grid, non_negative_codes=True)
         dequantized, info = self.encoder.apply(state, stats)
         info = dict(info)
         info["assignment"] = self.name
