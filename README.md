@@ -1,129 +1,229 @@
-# TFIC — Transverse-Field Ising Correction
+# TFIC Baselines
 
-An encoder for post-training quantization (PTQ), running **on top of an RTN base**
-(3-bit, group-size 128, Llama-3.1-8B). TFIC sits at the 4th stage of the PTQ
-pipeline (transform → rate → codebook → **encoder**): it does **not** change the
-base's scale/transform — it only edits the integer codes (`Wint`) to lower the
-exact reconstruction energy
+This repository contains post-training quantization baselines for studying:
 
+- quantization grids / transforms: Vanilla and AWQ are implemented
+- assignment methods: RTN, GPTQ, and TFIC are implemented
+- evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
+
+The current modular pipeline is:
+
+```text
+grid_baselines/         build the quantization grid
+assignment_methods/     assign integer codes on that grid
+run_quantization_baseline.py
+                         run one real-model grid x assignment experiment
+run_full_baselines.sh   orchestrate full experiments
+generate_awq_scales.py  generate AWQ per-layer scales
+eval_ppl.py             evaluate WikiText2 / C4 perplexity
+lm_eval_runner.py       run lm-evaluation-harness
 ```
-E(s) = Tr(R G R^T),   R = (Wint - zp)·scale - Wf,   G = H = Σ + μμᵀ
+
+## Implemented Methods
+
+Grid baselines:
+
+```text
+vanilla: symmetric and asymmetric
+awq:     symmetric and asymmetric
 ```
 
-via spin-flip moves (single-flip descent) + cluster tunnelling (group flip),
-inspired by the transverse-field Ising model.
+Assignment methods:
 
-> **Base = RTN, NOT AWQ.** `run_all.sh` invokes
-> `--base rtn --scheme asymmetric --encoder tfic_fast`.
-> AWQ is only an alternative base (`--base awq`, requires `--awq-scales-pt`) and
-> is **not** used here. Note the "AWQ-STYLE batched" comment in `run_fast.py`
-> refers only to the *calibration schedule* (batch N layers, calibrate once per
-> batch for speed — ~14 passes for a 224-layer model), **not** AWQ scaling. TFIC
-> is an independent correction that can be applied on top of any base.
+```text
+rtn
+gptq
+tfic
+```
 
----
+Default experiment setup:
 
-## Results (Llama-3.1-8B, W3 / g128, calib c4 128×2048)
+```text
+model:       meta-llama/Meta-Llama-3.1-8B
+bits:        3
+group size:  128
+calibration: C4 train shard, 128 samples, seqlen 2048
+PPL eval:    WikiText2 test + C4 validation
+lm-eval:     extended preset
+```
 
-| Encoder (base RTN) | WikiText2 ↓ | C4 ↓ |
-|---|---|---|
-| `none` (plain RTN)     | 11.0116 | 13.80   |
-| `clc`                  | 9.4793  | 12.3363 |
-| `eigenflip`            | 9.4395  | 12.2012 |
-| **`tfic_fast`**        | **8.3946** | **11.0672** |
+## Setup
 
-TFIC lowers WikiText2 from 11.01 → **8.39** vs. the RTN base (−2.62), and beats
-eigenflip (−1.04). PPL measured by `eval_ppl.py` on WikiText-2 and C4, seqlen 2048.
-
----
-
-## Running
+Install `uv`, then sync dependencies from `pyproject.toml`:
 
 ```bash
-bash run_all.sh
+pip install uv
+uv sync --extra dev
 ```
 
-`run_all.sh` does, for each encoder: (1) quantize RTN+encoder via `run_fast.py`,
-(2) score PPL via `eval_ppl.py`, (3) save `rtn_<scheme>_<enc>_ppl.json` then
-delete the checkpoint. Edit the `SCHEME=...` and `for ENC in ...` lines to run
-multiple cells. TFIC uses `LBS=4` and `--eig-on-cpu` (Gram-heavy).
-
-Run a single cell directly:
+For gated Hugging Face models such as LLaMA, put your token in `.env`:
 
 ```bash
-PYTHONPATH=. python eigenflip/run_fast.py \
-  --model-path <Llama-3.1-8B> \
+echo 'HF_TOKEN=your_hf_token_here' > .env
+```
+
+Sanity check:
+
+```bash
+uv run pytest tests -q
+```
+
+## Quick Debug Run
+
+Run one lightweight cell first. This quantizes only Vanilla/asymmetric/RTN and
+skips downstream `lm-eval`:
+
+```bash
+GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0 \
+  uv run bash run_full_baselines.sh
+```
+
+## Run Vanilla Baselines
+
+Run all implemented assignment methods on the Vanilla grid:
+
+```bash
+GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+  uv run bash run_full_baselines.sh
+```
+
+Each cell runs:
+
+```text
+1. quantization with run_quantization_baseline.py
+2. PPL eval on WikiText2 test and C4 validation
+3. lm-eval with the extended task preset
+```
+
+## Generate AWQ Scales
+
+AWQ requires per-layer scales before running the AWQ grid.
+
+Asymmetric AWQ scales:
+
+```bash
+uv run python generate_awq_scales.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --scheme asymmetric \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --out ./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt
+```
+
+Symmetric AWQ scales:
+
+```bash
+uv run python generate_awq_scales.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --scheme symmetric \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --out ./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt
+```
+
+## Run AWQ Baselines
+
+Run AWQ asymmetric and symmetric:
+
+```bash
+AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
+AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
+GRIDS="awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+  uv run bash run_full_baselines.sh
+```
+
+Run both Vanilla and AWQ:
+
+```bash
+AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
+AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
+GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+  uv run bash run_full_baselines.sh
+```
+
+## Outputs
+
+By default, `run_full_baselines.sh` uses:
+
+```text
+MODEL_PATH=meta-llama/Meta-Llama-3.1-8B
+MODEL_TAG=llama31_8b
+```
+
+Outputs are written to:
+
+```text
+./quantized_models/baselines_llama31_8b/
+./results/baselines_llama31_8b/
+./logs/
+```
+
+To save disk after each cell is evaluated:
+
+```bash
+DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+  uv run bash run_full_baselines.sh
+```
+
+## Single-Cell Commands
+
+Vanilla + TFIC:
+
+```bash
+uv run python run_quantization_baseline.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/baselines_llama31_8b \
+  --run-name llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
+  --grid vanilla \
+  --scheme asymmetric \
+  --assignment tfic \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --layer-batch-size 4 \
+  --eig-on-cpu
+```
+
+Evaluate PPL:
+
+```bash
+uv run python eval_ppl.py \
+  --model-path ./quantized_models/baselines_llama31_8b/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
+  --datasets wikitext2 c4 \
+  --seqlen 2048 \
+  --c4-samples 128 \
+  --seed 1234
+```
+
+## Legacy EigenFlip Runner
+
+The older runner is still available:
+
+```bash
+PYTHONPATH=. uv run python eigenflip/run_fast.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/eigenflip_3bit \
   --bits 3 --group-size 128 --k 16 \
   --base rtn --scheme asymmetric --encoder tfic_fast \
   --calib-dataset c4 --n-calib 128 --seqlen 2048 \
   --layer-batch-size 4 --eig-on-cpu
 
-PYTHONPATH=. python eval_ppl.py \
+PYTHONPATH=. uv run python eval_ppl.py \
   --model-path ./quantized_models/eigenflip_3bit/rtn_asymmetric_tfic_fast \
   --datasets wikitext2 c4 --seqlen 2048
 ```
 
-> Heavy GPU run + requires torch — run manually when ready; this README installs/runs nothing on its own.
+## Notes
 
----
-
-## Algorithm (summary)
-
-TFIC keeps the **"approximate proposals, exact acceptance"** principle: every move
-is re-verified against the exact reconstruction energy `E(s)=Tr(R G Rᵀ)`,
-guaranteeing monotonicity (E never increases).
-
-**Phase 1 — descent (batched single-flip).** For each column, propose its single
-best spin flip (Eq. 15), accept noise-floor-clearing columns per chunk, and update
-`RG += dR_chunk @ G[chunk,:]` with **one** matmul (Eq. 18). If a chunk raises the
-energy (same-row cross terms, Lemma 1), bisect it — still monotonic, no per-column
-sync. Chunk size 1 reduces exactly to the reference column sweep.
-
-**Phase 2 — tunnelling (group flip).** Grow a cluster `T` by synergy
-`S_jk = -2 δ_j δ_k G_jk` around candidate columns, enumerate the `2^|T|` flip
-configurations, and accept the cluster with negative group gain
-`dE_T = 2⟨δ_T, (RG)_{i,T}⟩ + δ_Tᵀ G_TT δ_T < 0`. This scalar work runs on
-CPU/numpy to avoid `.item()` inside the loop.
-
-**Transverse field (Eq. 13).** `Γ = α·U_bnd + β·U_fld + η·U_fru` decides which
-columns enter the pool; `U_fld` is the field exp(−dE/τ), `U_fru` is frustration
-from top-m neighbour coupling, `U_bnd` is the rounding boundary. `τ` = median |dE|
-(noise floor).
-
-### Key parameters
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--tfic-alpha/beta/eta` | 1.0 | weights of the 3 transverse-field terms |
-| `--tfic-gamma` | 0.5 | pool threshold Γ |
-| `--tfic-kappa` | 2.0 | acceptance threshold `-κ·τ` |
-| `--tfic-gmax` | 6 | max cluster size when tunnelling |
-| `--tfic-stages` | 2 | number of stages (anneal γ, gmax) |
-| `--tfic-sweeps` | 3 | descent sweeps per stage |
-| `--tfic-ccand` | 8.0 | candidate window for tunnelling (`dE ≤ c·τ`) |
-| `--tfic-topm` | 32 | coupling neighbours per column |
-| `--tfic-chunk` | 256 | columns per chunk in Phase 1 |
-
-`tfic` (reference, per-column) and `tfic_fast` (batched) share the **same
-algorithm and the same guarantees**; `tfic_fast` only restructures the hot loops
-to remove GPU↔CPU syncs.
-
----
-
-## Requirements
-
-- `keep_sigma=True` for `tfic`/`tfic_fast` (needs a materialized G = Σ + μμᵀ).
-  Already registered in `KEEP_SIGMA` in `run_fast.py`.
-- torch + transformers + datasets; GPU for quantize/eval (calib c4/wikitext2).
-- `calibration_utils.py` importable (c4 / wikitext2 loaders).
-
-## Relevant files
-
-```
-eigenflip/encoders/tfic_fast.py   * TFIC encoder (batched) — core file
-eigenflip/encoders/tfic.py          TFIC reference encoder (per-column)
-eigenflip/run_fast.py             * entry point: 1 base × 1 encoder per run
-eval_ppl.py                         PPL on WikiText-2 / C4
-run_all.sh                          driver: quantize → eval → save ppl.json
-```
+- GPTQ and TFIC optimize weighted reconstruction energy, not plain MSE.
+- Final model quality should be compared with PPL and downstream `lm-eval`.
+- AWQ without `AWQ_SCALES_PT` is skipped by `run_full_baselines.sh`.
+- Heavy GPU runs should be launched only after model access and disk space are ready.
