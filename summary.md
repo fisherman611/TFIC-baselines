@@ -124,6 +124,120 @@ IntegerQuantizedTensorState.from_rtn(..., scheme="asymmetric")
 
 ---
 
+### AWQ Quantization Grid
+
+Status: implemented in `grid_baselines/awq_quantization_grid.py`.
+
+AWQ rescales input channels before quantization, then folds the inverse scale
+back into the dequantized weights.
+
+Given per-input-channel AWQ scale `a`:
+
+```text
+W_scaled = W * a
+```
+
+The implementation supports both asymmetric and symmetric quantization on
+`W_scaled`.
+
+#### Asymmetric AWQ Grid
+
+Asymmetric AWQ applies min-max quantization to `W_scaled`:
+
+```text
+s_q = (w_scaled_max - w_scaled_min) / (2^b - 1)
+z = round(-w_scaled_min / s_q)
+q_min = 0
+q_max = 2^b - 1
+q = clip(round(W_scaled / s_q + z), q_min, q_max)
+```
+
+The dequantized weight is mapped back to the original coordinate:
+
+```text
+W_hat = (q - z) * s_q / a
+```
+
+Equivalently, the effective dequantization scale stored by the grid is:
+
+```text
+s_eff = s_q / a
+W_hat = (q - z) * s_eff
+```
+
+Code:
+
+```python
+from grid_baselines import build_asymmetric_awq_quantization_grid
+
+grid = build_asymmetric_awq_quantization_grid(
+    W,
+    awq_scales,
+    bits=bits,
+    group_size=group_size,
+)
+q, W_hat = grid.round_to_nearest()
+```
+
+This module matches the existing EigenFlip AWQ base:
+
+```python
+IntegerQuantizedTensorState.from_awq(W, awq_scales, bits, group_size)
+IntegerQuantizedTensorState.from_awq(
+    W,
+    awq_scales,
+    bits,
+    group_size,
+    scheme="asymmetric",
+)
+```
+
+#### Symmetric AWQ Grid
+
+Symmetric AWQ applies signed absmax quantization after AWQ scaling:
+
+```text
+s_q = max(abs(W_scaled)) / (2^(b - 1) - 1)
+z = 0
+q_min = -2^(b - 1)
+q_max =  2^(b - 1) - 1
+q = clip(round(W_scaled / s_q), q_min, q_max)
+```
+
+The dequantized weight is still mapped back to the original coordinate:
+
+```text
+W_hat = q * s_q / a
+```
+
+Code:
+
+```python
+from grid_baselines import build_symmetric_awq_quantization_grid
+
+grid = build_symmetric_awq_quantization_grid(
+    W,
+    awq_scales,
+    bits=bits,
+    group_size=group_size,
+)
+q, W_hat = grid.round_to_nearest()
+```
+
+It is also available through the EigenFlip AWQ state:
+
+```python
+IntegerQuantizedTensorState.from_awq(
+    W,
+    awq_scales,
+    bits,
+    group_size,
+    scheme="symmetric",
+)
+```
+
+---
+
 ## Assignment Methods
 
 Status: implemented in `assignment_methods/`.

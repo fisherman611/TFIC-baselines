@@ -17,24 +17,65 @@ from grid_baselines import (
     build_vanilla_quantization_grid,
 )
 from eigenflip.quantization.state import IntegerQuantizedTensorState
+from tests.examples import (  # noqa: E402
+    reconstruction_error,
+    vanilla_fixed_grid_weights,
+    vanilla_grid_demo_examples,
+    vanilla_manual_weights,
+    vanilla_new_assignment_weights,
+    vanilla_padding_weights,
+)
 
 
-def _reconstruction_error(weights: torch.Tensor, dequantized: torch.Tensor) -> dict[str, float]:
-    error = dequantized.float() - weights.float()
-    return {
-        "mse": float((error * error).mean().item()),
-        "mae": float(error.abs().mean().item()),
-        "max_abs": float(error.abs().max().item()),
-    }
+def _pad_to_group(weights: torch.Tensor, group_size: int) -> torch.Tensor:
+    rows, in_features = weights.shape
+    padded_in = ((in_features + group_size - 1) // group_size) * group_size
+    if padded_in == in_features:
+        return weights
+    padded = torch.zeros(rows, padded_in, dtype=weights.dtype, device=weights.device)
+    padded[:, :in_features] = weights
+    return padded
+
+
+def _manual_symmetric_rtn(weights: torch.Tensor, bits: int, group_size: int):
+    padded = _pad_to_group(weights, group_size)
+    rows, padded_in = padded.shape
+    groups = padded_in // group_size
+    grouped = padded.reshape(rows, groups, group_size)
+    qmin = -(2 ** (bits - 1))
+    qmax = 2 ** (bits - 1) - 1
+    scale_group = (grouped.abs().amax(dim=2, keepdim=True) / qmax).clamp_min(1e-8)
+    scale = scale_group.repeat(1, 1, group_size).reshape(rows, padded_in)
+    codes = torch.round(padded / scale).clamp(qmin, qmax)
+    dequantized = (codes * scale)[:, : weights.shape[1]]
+    return codes[:, : weights.shape[1]], dequantized
+
+
+def _manual_asymmetric_rtn(weights: torch.Tensor, bits: int, group_size: int):
+    padded = _pad_to_group(weights, group_size)
+    rows, padded_in = padded.shape
+    groups = padded_in // group_size
+    grouped = padded.reshape(rows, groups, group_size)
+    qmin = 0
+    qmax = 2**bits - 1
+    wmin = grouped.min(dim=2, keepdim=True)[0]
+    wmax = grouped.max(dim=2, keepdim=True)[0]
+    scale_group = ((wmax - wmin) / qmax).clamp_min(1e-8)
+    zero_point_group = torch.round(-wmin / scale_group).clamp(qmin, qmax)
+    scale = scale_group.repeat(1, 1, group_size).reshape(rows, padded_in)
+    zero_point = zero_point_group.repeat(1, 1, group_size).reshape(rows, padded_in)
+    codes = torch.round(padded / scale + zero_point).clamp(qmin, qmax)
+    dequantized = ((codes - zero_point) * scale)[:, : weights.shape[1]]
+    return codes[:, : weights.shape[1]], dequantized
 
 
 def test_round_to_nearest_returns_original_shape_after_padding():
-    weights = torch.tensor([[0.0, 0.1, 0.26, -0.2, 0.4]], dtype=torch.float32)
+    weights = vanilla_padding_weights()
 
     grid = build_vanilla_quantization_grid(weights, bits=3, group_size=4)
     integer_weights, dequantized = grid.round_to_nearest()
 
-    assert integer_weights.shape == (1, 8)
+    assert integer_weights.shape == (2, 8)
     assert dequantized.shape == weights.shape
     assert grid.scheme == "symmetric"
     assert grid.qmin == -4
@@ -42,29 +83,32 @@ def test_round_to_nearest_returns_original_shape_after_padding():
 
 
 def test_quantize_dequantize_matches_manual_groupwise_symmetric_rtn():
-    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32)
+    weights = vanilla_manual_weights()
 
     grid = build_symmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
     integer_weights, dequantized = grid.round_to_nearest()
 
-    scale = 0.26 / 3
-    expected_codes = torch.round(weights / scale).clamp(-4, 3)
-    expected_dequantized = expected_codes * scale
+    expected_codes, expected_dequantized = _manual_symmetric_rtn(
+        weights,
+        bits=3,
+        group_size=4,
+    )
 
     assert torch.equal(integer_weights[:, : weights.shape[1]], expected_codes)
     assert torch.allclose(dequantized, expected_dequantized, atol=1e-6)
 
 
 def test_quantize_dequantize_matches_manual_groupwise_asymmetric_rtn():
-    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32)
+    weights = vanilla_manual_weights()
 
     grid = build_asymmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
     integer_weights, dequantized = grid.round_to_nearest()
 
-    scale = (0.26 - (-0.2)) / 7
-    zero_point = round(-(-0.2) / scale)
-    expected_codes = torch.round(weights / scale + zero_point).clamp(0, 7)
-    expected_dequantized = (expected_codes - zero_point) * scale
+    expected_codes, expected_dequantized = _manual_asymmetric_rtn(
+        weights,
+        bits=3,
+        group_size=4,
+    )
 
     assert grid.scheme == "asymmetric"
     assert torch.equal(integer_weights[:, : weights.shape[1]], expected_codes)
@@ -72,21 +116,21 @@ def test_quantize_dequantize_matches_manual_groupwise_asymmetric_rtn():
 
 
 def test_quantize_can_assign_new_weights_to_fixed_grid():
-    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.3]], dtype=torch.float32)
-    new_weights = torch.tensor([[-0.18, 0.04, 0.12, 0.27]], dtype=torch.float32)
+    weights = vanilla_fixed_grid_weights()
+    new_weights = vanilla_new_assignment_weights()
 
     grid = build_symmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
     new_codes = grid.quantize(new_weights)
     new_dequantized = grid.dequantize(new_codes)
 
-    assert new_codes.shape == weights.shape
+    assert new_codes.shape == (2, 8)
     assert new_dequantized.shape == weights.shape
     assert torch.all(new_codes >= grid.qmin)
     assert torch.all(new_codes <= grid.qmax)
 
 
 def test_eigenflip_rtn_state_matches_vanilla_symmetric_grid():
-    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32)
+    weights = vanilla_manual_weights()
 
     grid = build_symmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
     state = IntegerQuantizedTensorState.from_rtn(
@@ -106,7 +150,7 @@ def test_eigenflip_rtn_state_matches_vanilla_symmetric_grid():
 
 
 def test_eigenflip_rtn_state_matches_vanilla_asymmetric_grid():
-    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32)
+    weights = vanilla_manual_weights()
 
     grid = build_asymmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
     state = IntegerQuantizedTensorState.from_rtn(
@@ -126,14 +170,9 @@ def test_eigenflip_rtn_state_matches_vanilla_asymmetric_grid():
 
 
 def _demo_vanilla_grid_logic():
-    examples = [
-        torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32),
-        torch.tensor([[0.0, 0.1, 0.26, -0.2, 0.4]], dtype=torch.float32),
-    ]
-
     demo_cases = [
         (idx, weights, scheme)
-        for idx, weights in enumerate(examples, start=1)
+        for idx, weights in enumerate(vanilla_grid_demo_examples(), start=1)
         for scheme in ("symmetric", "asymmetric")
     ]
 
@@ -158,7 +197,7 @@ def _demo_vanilla_grid_logic():
         print("dequantized:")
         print(dequantized)
         print("reconstruction error:")
-        print(_reconstruction_error(weights, dequantized))
+        print(reconstruction_error(weights, dequantized))
 
 
 if __name__ == "__main__":

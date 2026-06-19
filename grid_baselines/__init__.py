@@ -1,5 +1,11 @@
 """Quantization grid baseline implementations."""
 
+from .awq_quantization_grid import (
+    AWQQuantizationGrid,
+    build_asymmetric_awq_quantization_grid,
+    build_awq_quantization_grid,
+    build_symmetric_awq_quantization_grid,
+)
 from .vanilla_quantization_grid import (
     VanillaQuantizationGrid,
     build_asymmetric_vanilla_quantization_grid,
@@ -8,7 +14,11 @@ from .vanilla_quantization_grid import (
 )
 
 __all__ = [
+    "AWQQuantizationGrid",
     "VanillaQuantizationGrid",
+    "build_asymmetric_awq_quantization_grid",
+    "build_awq_quantization_grid",
+    "build_symmetric_awq_quantization_grid",
     "build_asymmetric_vanilla_quantization_grid",
     "build_symmetric_vanilla_quantization_grid",
     "build_vanilla_quantization_grid",

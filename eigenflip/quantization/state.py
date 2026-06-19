@@ -130,14 +130,23 @@ class IntegerQuantizedTensorState:
     @classmethod
     @torch.no_grad()
     def from_awq(cls, W: torch.Tensor, awq_scales: torch.Tensor,
-                 bits: int, group_size: int) -> "IntegerQuantizedTensorState":
+                 bits: int, group_size: int,
+                 scheme: str = "asymmetric") -> "IntegerQuantizedTensorState":
         """
         AWQ base: per-input-channel scales `awq_scales` [in_features] already
         chosen by the AWQ grid search. We quantize W * s group-wise, and store
         the state in the *unscaled* coordinate so encoders and dequant compose
         with the AWQ division. Concretely the deployed weight is
         Q(W*s)/s; we keep integer codes of W*s and fold 1/s into `scale`.
+
+        scheme="asymmetric" keeps the original EigenFlip AWQ behavior.
+        scheme="symmetric" uses signed absmax quantization after AWQ scaling.
         """
+        if scheme not in {"asymmetric", "symmetric"}:
+            raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
+        if scheme == "symmetric" and bits < 2:
+            raise ValueError("symmetric AWQ requires bits >= 2")
+
         C, in_features = W.shape
         device, dtype = W.device, W.dtype
         s = awq_scales.to(device=device, dtype=dtype).reshape(1, in_features)
@@ -154,16 +163,24 @@ class IntegerQuantizedTensorState:
             Wp, sp = Ws, s
 
         Wg = Wp.reshape(C, n_groups, group_size)
-        wmin = Wg.min(dim=2, keepdim=True)[0]
-        wmax = Wg.max(dim=2, keepdim=True)[0]
-        max_int = 2 ** bits - 1
-        scale_g = ((wmax - wmin) / max_int).clamp_min(1e-8)
-        zp_g = torch.round(-wmin / scale_g).clamp(0, max_int)
+        if scheme == "symmetric":
+            min_int = -(2 ** (bits - 1))
+            max_int = 2 ** (bits - 1) - 1
+            absmax = Wg.abs().amax(dim=2, keepdim=True)
+            scale_g = (absmax / max_int).clamp_min(1e-8)
+            zp_g = torch.zeros_like(scale_g)
+        else:
+            min_int = 0
+            max_int = 2 ** bits - 1
+            wmin = Wg.min(dim=2, keepdim=True)[0]
+            wmax = Wg.max(dim=2, keepdim=True)[0]
+            scale_g = ((wmax - wmin) / max_int).clamp_min(1e-8)
+            zp_g = torch.round(-wmin / scale_g).clamp(min_int, max_int)
 
         scale_q = cls._expand_group(scale_g, group_size, padded_in)
         zp = cls._expand_group(zp_g, group_size, padded_in)
         pre_round = Wp / scale_q + zp
-        integer = torch.round(pre_round).clamp(0, max_int)
+        integer = torch.round(pre_round).clamp(min_int, max_int)
 
         # Fold AWQ division into the effective scale so dequantize() yields
         # (q - zp) * scale_q / s == Q(W*s)/s in the unscaled coordinate.
@@ -174,9 +191,9 @@ class IntegerQuantizedTensorState:
             torch.cat([W, torch.zeros(C, padded_in - in_features,
                                       device=device, dtype=dtype)], dim=1),
             pre_round=pre_round, integer_weights=integer,
-            scale=eff_scale, zero_point=zp, max_int=max_int, min_int=0,
+            scale=eff_scale, zero_point=zp, max_int=max_int, min_int=min_int,
             in_features=in_features, padded_in_features=padded_in,
             original_dtype=dtype, group_size=group_size,
         )
-        del Wg, wmin, wmax, scale_g, zp_g, scale_q, Ws
+        del Wg, scale_g, zp_g, scale_q, Ws
         return st
