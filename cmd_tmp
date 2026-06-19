@@ -1,0 +1,47 @@
+
+Llama 3.1. /home/DATA/prometheus/anh/.cache/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b
+Mistral 7B /home/DATA/prometheus/anh/.cache/huggingface/hub/models--mistralai--Mistral-7B-v0.3/snapshots/caa1feb0e54d415e2df31207e5f4e273e33509b1 
+Qwen2.5 /home/DATA/prometheus/anh/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B/snapshots/d149729398750b98c0af14eb82c78cfe92750796 
+
+[wikitext2] building test stream ...
+[wikitext2] perplexity = 11.0116                        
+
+[c4] building test stream ...
+  [c4] loading cached windows: ./dataset_cache/c4_testenc_e6c99db6fa6b.pt
+[c4] perplexity = 13.8248                               
+
+SUMMARY  rtn_none  wikitext2=11.0116 | c4=13.8
+
+SUMMARY  rtn_clc  wikitext2=9.4793 | c4=12.3363
+Wrote ./quantized_models/eigenflip_3bit/rtn_clc/ppl.json
+>>> [2.5] preserving ppl.json
+>>> [3/3] deleting ./quantized_models/eigenflip_3bit/rtn_clc
+<<< done rtn+clc
+  
+
+SUMMARY  rtn_eigenflip  wikitext2=9.4395 | c4=12.2012                                        
+Wrote ./quantized_models/eigenflip_3bit/rtn_eigenflip/ppl.json                               
+>>> [2.5] preserving ppl.json                                                                
+>>> [3/3] deleting ./quantized_models/eigenflip_3bit/rtn_eigenflip                           
+<<< done rtn+eigenflip                                                                       
+                               
+SUMMARY  rtn_eigenflip_solve  wikitext2=8.4383 | c4=10.9902
+Wrote ./quantized_models/eigenflip_3bit/rtn_eigenflip_solve/ppl.json
+>>> [2.5] preserving ppl.json
+>>> [3/3] deleting ./quantized_models/eigenflip_3bit/rtn_eigenflip_solve
+<<< done rtn+eigenflip_solve
+
+SUMMARY  rtn_tfic_fast  wikitext2=8.3946 | c4=11.0672
+Wrote ./quantized_models/eigenflip_3bit/rtn_tfic_fast/ppl.json
+>>> [2.5] preserving ppl.json
+>>> [3/3] deleting ./quantized_models/eigenflip_3bit/rtn_tfic_fast
+<<< done rtn+tfic_fast
+
+=== all cells done Fri Jun 12 03:39:28 AM UTC 2026 ===
+preserved ppl files: ./quantized_models/eigenflip_3bit/rtn_*_ppl.json
+
+SUMMARY  rtn_gptq  wikitext2=12.4533 | c4=12.3316
+Wrote ./quantized_models/eigenflip_3bit/rtn_gptq/ppl.json
+>>> [2.5] preserving ppl.json
+>>> [3/3] deleting ./quantized_models/eigenflip_3bit/rtn_gptq
+<<< done rtn+gptq
