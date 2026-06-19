@@ -130,7 +130,7 @@ def main():
     p.add_argument("--datasets", nargs="+", default=["wikitext2", "c4"],
                    choices=["wikitext2", "c4"])
     p.add_argument("--seqlen", type=int, default=2048)
-    p.add_argument("--c4-samples", type=int, default=256,
+    p.add_argument("--c4-samples", type=int, default=128,
                    help="number of seqlen windows drawn for C4.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cache-dir", type=str, default="./dataset_cache",
