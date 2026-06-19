@@ -14,12 +14,12 @@ We compare the following assignment methods:
 
 #### Main baselines
 
-- [ ] **RTN**
-- [ ] **GPTQ**
+- [X] ~~**RTN**~~
+- [X] ~~**GPTQ**~~
 - [ ] **FlexRound**
 - [ ] **GPTAQ**
 - [ ] **GPTAQ + ResComp**
-- [ ] **TFIC**
+- [X] ~~**TFIC**~~
 
 `GPTAQ + ResComp` is based on *Rethinking Residual Errors in Compensation-based LLM Quantization*, ICLR 2026.
 

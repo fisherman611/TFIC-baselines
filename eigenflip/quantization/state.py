@@ -65,12 +65,28 @@ class IntegerQuantizedTensorState:
 
     @classmethod
     @torch.no_grad()
-    def from_rtn(cls, W: torch.Tensor, bits: int, group_size: int
+    def from_rtn(cls, W: torch.Tensor, bits: int, group_size: int,
+                 scheme: str = "asymmetric"
                  ) -> "IntegerQuantizedTensorState":
         """
-        Group-wise asymmetric RTN. Produces the full integer state so any
-        encoder (CLC/EigenFlip/Solve/gptq-encoder) can run on top.
+        Group-wise RTN. Produces the full integer state so any encoder
+        (CLC/EigenFlip/Solve/gptq-encoder) can run on top.
+
+        scheme="asymmetric" keeps the original EigenFlip behavior:
+            q in [0, 2^bits - 1]
+            scale = (wmax - wmin) / (2^bits - 1)
+            zp = round(-wmin / scale)
+
+        scheme="symmetric" uses signed absmax quantization:
+            q in [-2^(bits - 1), 2^(bits - 1) - 1]
+            scale = max(abs(W)) / (2^(bits - 1) - 1)
+            zp = 0
         """
+        if scheme not in {"asymmetric", "symmetric"}:
+            raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
+        if scheme == "symmetric" and bits < 2:
+            raise ValueError("symmetric RTN requires bits >= 2")
+
         C, in_features = W.shape
         device, dtype = W.device, W.dtype
         n_groups = (in_features + group_size - 1) // group_size
@@ -83,24 +99,32 @@ class IntegerQuantizedTensorState:
             Wp = W
 
         Wg = Wp.reshape(C, n_groups, group_size)
-        wmin = Wg.min(dim=2, keepdim=True)[0]
-        wmax = Wg.max(dim=2, keepdim=True)[0]
-        max_int = 2 ** bits - 1
-        scale_g = ((wmax - wmin) / max_int).clamp_min(1e-8)
-        zp_g = torch.round(-wmin / scale_g).clamp(0, max_int)
+        if scheme == "symmetric":
+            min_int = -(2 ** (bits - 1))
+            max_int = 2 ** (bits - 1) - 1
+            absmax = Wg.abs().amax(dim=2, keepdim=True)
+            scale_g = (absmax / max_int).clamp_min(1e-8)
+            zp_g = torch.zeros_like(scale_g)
+        else:
+            min_int = 0
+            max_int = 2 ** bits - 1
+            wmin = Wg.min(dim=2, keepdim=True)[0]
+            wmax = Wg.max(dim=2, keepdim=True)[0]
+            scale_g = ((wmax - wmin) / max_int).clamp_min(1e-8)
+            zp_g = torch.round(-wmin / scale_g).clamp(min_int, max_int)
 
         scale = cls._expand_group(scale_g, group_size, padded_in)
         zp = cls._expand_group(zp_g, group_size, padded_in)
         pre_round = Wp / scale + zp
-        integer = torch.round(pre_round).clamp(0, max_int)
+        integer = torch.round(pre_round).clamp(min_int, max_int)
 
         st = cls(
             float_weights=Wp, pre_round=pre_round, integer_weights=integer,
-            scale=scale, zero_point=zp, max_int=max_int, min_int=0,
+            scale=scale, zero_point=zp, max_int=max_int, min_int=min_int,
             in_features=in_features, padded_in_features=padded_in,
             original_dtype=dtype, group_size=group_size,
         )
-        del Wg, wmin, wmax, scale_g, zp_g
+        del Wg, scale_g, zp_g
         return st
 
     @classmethod

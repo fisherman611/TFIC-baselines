@@ -16,6 +16,16 @@ from grid_baselines import (
     build_symmetric_vanilla_quantization_grid,
     build_vanilla_quantization_grid,
 )
+from eigenflip.quantization.state import IntegerQuantizedTensorState
+
+
+def _reconstruction_error(weights: torch.Tensor, dequantized: torch.Tensor) -> dict[str, float]:
+    error = dequantized.float() - weights.float()
+    return {
+        "mse": float((error * error).mean().item()),
+        "mae": float(error.abs().mean().item()),
+        "max_abs": float(error.abs().max().item()),
+    }
 
 
 def test_round_to_nearest_returns_original_shape_after_padding():
@@ -75,6 +85,46 @@ def test_quantize_can_assign_new_weights_to_fixed_grid():
     assert torch.all(new_codes <= grid.qmax)
 
 
+def test_eigenflip_rtn_state_matches_vanilla_symmetric_grid():
+    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32)
+
+    grid = build_symmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
+    state = IntegerQuantizedTensorState.from_rtn(
+        weights,
+        bits=3,
+        group_size=4,
+        scheme="symmetric",
+    )
+    integer_weights, dequantized = grid.round_to_nearest()
+
+    assert torch.equal(state.integer_weights, integer_weights)
+    assert torch.allclose(state.scale, grid.scale)
+    assert torch.equal(state.zero_point, grid.zero_point)
+    assert state.min_int == grid.qmin
+    assert state.max_int == grid.qmax
+    assert torch.allclose(state.dequantize(), dequantized)
+
+
+def test_eigenflip_rtn_state_matches_vanilla_asymmetric_grid():
+    weights = torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32)
+
+    grid = build_asymmetric_vanilla_quantization_grid(weights, bits=3, group_size=4)
+    state = IntegerQuantizedTensorState.from_rtn(
+        weights,
+        bits=3,
+        group_size=4,
+        scheme="asymmetric",
+    )
+    integer_weights, dequantized = grid.round_to_nearest()
+
+    assert torch.equal(state.integer_weights, integer_weights)
+    assert torch.allclose(state.scale, grid.scale)
+    assert torch.equal(state.zero_point, grid.zero_point)
+    assert state.min_int == grid.qmin
+    assert state.max_int == grid.qmax
+    assert torch.allclose(state.dequantize(), dequantized)
+
+
 def _demo_vanilla_grid_logic():
     examples = [
         torch.tensor([[-0.2, 0.0, 0.1, 0.26]], dtype=torch.float32),
@@ -107,6 +157,8 @@ def _demo_vanilla_grid_logic():
         print(integer_weights[:, : weights.shape[1]])
         print("dequantized:")
         print(dequantized)
+        print("reconstruction error:")
+        print(_reconstruction_error(weights, dequantized))
 
 
 if __name__ == "__main__":
@@ -115,6 +167,8 @@ if __name__ == "__main__":
         test_quantize_dequantize_matches_manual_groupwise_symmetric_rtn,
         test_quantize_dequantize_matches_manual_groupwise_asymmetric_rtn,
         test_quantize_can_assign_new_weights_to_fixed_grid,
+        test_eigenflip_rtn_state_matches_vanilla_symmetric_grid,
+        test_eigenflip_rtn_state_matches_vanilla_asymmetric_grid,
     ]
     for test in tqdm(tests, desc="vanilla grid tests"):
         test()
