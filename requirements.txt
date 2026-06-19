@@ -1,0 +1,9 @@
+torch
+transformers
+datasets
+accelerate
+tqdm
+numpy
+lm-eval
+python-dotenv
+pytest

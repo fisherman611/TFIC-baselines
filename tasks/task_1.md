@@ -37,7 +37,7 @@ The assignment methods will be applied on top of the following quantization grid
 
 #### Main grid baselines
 
-- [ ] **Vanilla quantization grid**
+- [X] ~~**Vanilla quantization grid**~~
 - [ ] **AWQ**
 - [ ] **FlatQuant**
 - [ ] **SpinQuant**
