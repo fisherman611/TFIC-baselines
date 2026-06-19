@@ -1,0 +1,33 @@
+[project]
+name = "tfic-baselines"
+version = "0.1.0"
+description = "Quantization grid and assignment-method baselines for TFIC experiments."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "accelerate",
+  "datasets",
+  "lm-eval",
+  "numpy",
+  "python-dotenv",
+  "torch",
+  "tqdm",
+  "transformers",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[project.scripts]
+generate-awq-scales = "generate_awq_scales:main"
+lm-eval-smoke = "lm_eval_smoke:main"
+quantize-baseline = "run_quantization_baseline:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false

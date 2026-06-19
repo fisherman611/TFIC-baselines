@@ -94,7 +94,7 @@ If time and resources are sufficient, run:
 Experiments will be conducted on the following LLMs:
 
 - [ ] **LLaMA-3.1-8B**
-- [ ] **Qwen2.5-8B**
+- [ ] **Qwen2.5-7B**
 - [ ] **Mistral-V3-7B**
 
 The recommended starting model is **LLaMA-3.1-8B**, since it can be used to debug and stabilize the full experimental pipeline before scaling to the other models.
