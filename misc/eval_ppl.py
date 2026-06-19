@@ -31,7 +31,7 @@ from tqdm import tqdm
 # --------------------------------------------------------------------------
 def get_wikitext2_testenc(tokenizer):
     from datasets import load_dataset
-    test = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    test = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     text = "\n\n".join(test["text"])
     return tokenizer(text, return_tensors="pt").input_ids
 

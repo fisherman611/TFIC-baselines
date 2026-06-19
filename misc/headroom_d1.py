@@ -647,7 +647,7 @@ def summarize(records):
 
 def load_wikitext2_simple(n_samples=128):
     print("Loading WikiText-2 (simple)...")
-    ds = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+    ds = load_dataset('Salesforce/wikitext', 'wikitext-2-raw-v1', split='train')
     texts = [item['text'] for item in ds if len(item['text'].strip()) > 100]
     return texts[:n_samples]
 

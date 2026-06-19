@@ -182,7 +182,7 @@ def get_wikitext2_calibration_data(tokenizer, n_samples=128, seqlen=2048, seed=4
     random.seed(seed)
 
     # Load WikiText-2
-    dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split)
+    dataset = load_dataset('Salesforce/wikitext', 'wikitext-2-raw-v1', split=split)
 
     # Filter out empty texts
     texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
