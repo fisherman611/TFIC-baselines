@@ -3,7 +3,7 @@
 This repository contains post-training quantization baselines for studying:
 
 - quantization grids / transforms: Vanilla and AWQ are implemented
-- assignment methods: RTN, GPTQ, and TFIC are implemented
+- assignment methods: RTN, GPTQ, fixed-grid FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
 
 The current modular pipeline is:
@@ -34,8 +34,18 @@ Assignment methods:
 ```text
 rtn
 gptq
+flexround
 tfic
 ```
+
+`flexround` is the assignment-only variant required by this repository's
+factorized benchmark. It keeps the selected grid's scale and zero-point fixed,
+learns FlexRound's positive element-wise divisor (plus its output-channel
+factor), and minimizes the calibration reconstruction surrogate
+`H_tilde = diag(D) + V V^T`. As in the paper, the integer codes produced after
+the final optimization step are returned directly. The learned divisors are
+not stored in the checkpoint; inference still uses ordinary integer codes and
+the original Vanilla/AWQ grid.
 
 Default experiment setup:
 
@@ -101,7 +111,7 @@ RUN_WANDB=0 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0
 Run all implemented assignment methods on the Vanilla grid:
 
 ```bash
-GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -152,7 +162,7 @@ Run AWQ asymmetric and symmetric:
 ```bash
 AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
 AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
-GRIDS="awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+GRIDS="awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -161,7 +171,7 @@ Run both Vanilla and AWQ:
 ```bash
 AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
 AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
-GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -194,7 +204,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 \
 MODEL_DEVICE_MAP=balanced \
 INPUT_DEVICE=auto \
 STATS_DEVICE=layer \
-GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
 uv run bash run_full_baselines.sh
 ```
 
@@ -224,11 +234,38 @@ Outputs are written to:
 To save disk after each cell is evaluated:
 
 ```bash
-DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
 ## Single-Cell Commands
+
+AWQ + fixed-grid FlexRound:
+
+```bash
+uv run python run_quantization_baseline.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/baselines_llama31_8b \
+  --run-name llama31_8b_awq_asymmetric_flexround_w3g128_c4n128 \
+  --grid awq \
+  --awq-scales-pt ./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
+  --scheme asymmetric \
+  --assignment flexround \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --k 16 \
+  --layer-batch-size 4 \
+  --flexround-steps 5000 \
+  --flexround-lr 2e-4
+```
+
+For a quick pipeline check, lower `--flexround-steps`; use 5000 for the paper's
+reconstruction-step budget. `--no-flexround-row-scale` disables the additional
+output-channel factor. The full runner exposes the same settings through
+`FLEXROUND_STEPS`, `FLEXROUND_LR`, and `FLEXROUND_LOG_DIVISOR_BOUND`.
 
 Vanilla + TFIC:
 

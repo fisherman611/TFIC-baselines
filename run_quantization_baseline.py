@@ -20,7 +20,12 @@ import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from assignment_methods import GPTQAssignment, RTNAssignment, TFICAssignment
+from assignment_methods import (
+    FlexRoundAssignment,
+    GPTQAssignment,
+    RTNAssignment,
+    TFICAssignment,
+)
 from eigenflip.quantization.awq_scales import scales_from_awq_run
 from eigenflip.statistics.collect_fast import collect_and_encode_awq_style
 from grid_baselines import build_awq_quantization_grid, build_vanilla_quantization_grid
@@ -32,6 +37,7 @@ except ImportError:
 
 
 NEED_H = {
+    "flexround": True,
     "rtn": False,
     "gptq": True,
     "tfic": True,
@@ -44,6 +50,13 @@ def build_assignment(name: str, args):
         return RTNAssignment()
     if name == "gptq":
         return GPTQAssignment(damp=args.gptq_damp, order=args.gptq_order)
+    if name == "flexround":
+        return FlexRoundAssignment(
+            steps=args.flexround_steps,
+            lr=args.flexround_lr,
+            log_divisor_bound=args.flexround_log_divisor_bound,
+            learn_row_scale=args.flexround_row_scale,
+        )
     if name == "tfic":
         return TFICAssignment(
             alpha=args.tfic_alpha,
@@ -161,6 +174,16 @@ def parse_args():
     parser.add_argument("--gptq-damp", type=float, default=0.01)
     parser.add_argument("--gptq-order", choices=["diag", "natural"], default="diag")
 
+    parser.add_argument("--flexround-steps", type=int, default=5000)
+    parser.add_argument("--flexround-lr", type=float, default=2e-4)
+    parser.add_argument("--flexround-log-divisor-bound", type=float, default=6.0)
+    parser.add_argument(
+        "--flexround-row-scale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn the additional output-channel factor from FlexRound.",
+    )
+
     parser.add_argument("--tfic-alpha", type=float, default=1.0)
     parser.add_argument("--tfic-beta", type=float, default=1.0)
     parser.add_argument("--tfic-eta", type=float, default=1.0)
@@ -218,6 +241,12 @@ def main():
             corrected, _info = assignment.apply_to_grid(grid)
         else:
             corrected, _info = assignment.apply_to_grid(grid, stats)
+        if args.assignment == "flexround":
+            print(
+                f"  {layer_name}: loss {_info['initial_loss']:.6g} -> "
+                f"{_info['final_loss']:.6g}, changed_codes="
+                f"{_info['changed_codes']} ({_info['changed_fraction']:.2%})"
+            )
         module.weight.data = corrected.to(module.weight.dtype)
         del grid, corrected
 

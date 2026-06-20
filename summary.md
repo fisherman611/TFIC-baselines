@@ -242,8 +242,8 @@ IntegerQuantizedTensorState.from_awq(
 
 Status: implemented in `assignment_methods/`.
 
-These wrappers expose the existing EigenFlip assignment code with clearer
-experiment labels.
+These modules expose RTN, GPTQ, FlexRound, and TFIC through a common fixed-grid
+assignment interface.
 
 ### RTN
 
@@ -282,6 +282,82 @@ from assignment_methods import GPTQAssignment
 
 W_hat, info = GPTQAssignment().apply_to_grid(grid, stats)
 ```
+
+### FlexRound
+
+Status: implemented in `assignment_methods/flexround.py`.
+
+The repository implements FlexRound as an assignment-only method so it can be
+compared fairly across the same fixed Vanilla or AWQ grid. The grid scale and
+zero-point remain unchanged. FlexRound learns a positive divisor for each
+weight and an optional output-channel factor:
+
+```text
+S = exp(log_S_element + log_S_row)
+q = clip(round(W / (s * S) + z), q_min, q_max)
+W_hat = s * (q - z)
+```
+
+`log_S_element` has the same shape as the padded weight matrix.
+`log_S_row` has shape `[out_features, 1]` and corresponds to the additional
+output-channel factor used by FlexRound for linear layers. Both are initialized
+to zero, so `S = 1` and optimization starts exactly from RTN.
+
+Rounding uses a straight-through estimator:
+
+```text
+round_ste(x) = x + stop_gradient(round(x) - x)
+```
+
+The assignment is optimized against the calibration reconstruction surrogate
+already stored in `LayerStats`:
+
+```text
+H_tilde = diag(D) + V V^T
+R = W_hat - W
+L = Tr(R H_tilde R^T) / out_features
+```
+
+This is the layer-output reconstruction energy under the low-rank-plus-diagonal
+second-moment approximation collected from calibration activations. Following
+the paper, the method returns the hard integer codes obtained after the final
+optimization step. It does not retain the best intermediate codes and does not
+fall back to RTN.
+
+Code:
+
+```python
+from assignment_methods import FlexRoundAssignment
+
+assignment = FlexRoundAssignment(
+    steps=5000,
+    lr=2e-4,
+    log_divisor_bound=6.0,
+    learn_row_scale=True,
+)
+W_hat, info = assignment.apply_to_grid(grid, stats)
+```
+
+The returned `info` contains:
+
+```text
+variant = fixed_grid_surrogate
+codes
+initial_loss
+final_loss
+changed_codes
+changed_fraction
+```
+
+The learned divisors are discarded after integer codes are selected. Inference
+stores only the ordinary grid codes, scale, and zero-point, so FlexRound adds no
+per-weight inference metadata.
+
+Important scope note: this is the fixed-grid assignment variant required by
+this repository's `grid x assignment` design. Full FlexRound from the paper
+also learns the quantization grid scale and can reconstruct an entire block.
+Learning the grid scale here would change both the grid and assignment at once,
+so it is deliberately excluded from this baseline.
 
 ### TFIC
 
@@ -412,6 +488,27 @@ python run_quantization_baseline.py `
   --run-name vanilla_asym_tfic_w3g128_c4n128
 ```
 
+Vanilla + FlexRound:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid vanilla `
+  --scheme asymmetric `
+  --assignment flexround `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --k 16 `
+  --layer-batch-size 4 `
+  --flexround-steps 5000 `
+  --flexround-lr 2e-4 `
+  --run-name vanilla_asym_flexround_w3g128_c4n128
+```
+
 AWQ + RTN:
 
 ```powershell
@@ -468,6 +565,28 @@ python run_quantization_baseline.py `
   --layer-batch-size 4 `
   --eig-on-cpu `
   --run-name awq_asym_tfic_w3g128_c4n128
+```
+
+AWQ + FlexRound:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid awq `
+  --awq-scales-pt <path-to-awq-scales.pt> `
+  --scheme asymmetric `
+  --assignment flexround `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --k 16 `
+  --layer-batch-size 4 `
+  --flexround-steps 5000 `
+  --flexround-lr 2e-4 `
+  --run-name awq_asym_flexround_w3g128_c4n128
 ```
 
 ### PPL Evaluation Commands

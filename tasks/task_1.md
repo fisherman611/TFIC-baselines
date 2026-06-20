@@ -16,7 +16,7 @@ We compare the following assignment methods:
 
 - [X] ~~**RTN**~~
 - [X] ~~**GPTQ**~~
-- [ ] **FlexRound**
+- [X] ~~**FlexRound**~~
 - [ ] **GPTAQ**
 - [ ] **GPTAQ + ResComp**
 - [X] ~~**TFIC**~~
