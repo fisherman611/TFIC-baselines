@@ -5,6 +5,7 @@ import torch
 
 from assignment_methods import FlexRoundAssignment, RTNAssignment
 from eigenflip.statistics.trust_region import LayerStats
+from run_quantization_baseline import assignment_needs_h
 from tests.examples import (
     toy_awq_grids,
     toy_correlated_stats,
@@ -80,6 +81,13 @@ def test_flexround_zero_steps_is_exactly_rtn():
     assert torch.equal(info["codes"], rtn_info["codes"])
     assert torch.equal(flexround_output, rtn_output)
     assert info["changed_codes"] == 0
+
+
+def test_flexround_k_zero_uses_lightweight_statistics_path():
+    assert assignment_needs_h("flexround", 0) is False
+    assert assignment_needs_h("flexround", 16) is True
+    assert assignment_needs_h("gptq", 0) is True
+    assert assignment_needs_h("tfic", 0) is True
 
 
 @pytest.mark.parametrize(

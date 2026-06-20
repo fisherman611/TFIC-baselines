@@ -267,6 +267,36 @@ reconstruction-step budget. `--no-flexround-row-scale` disables the additional
 output-channel factor. The full runner exposes the same settings through
 `FLEXROUND_STEPS`, `FLEXROUND_LR`, and `FLEXROUND_LOG_DIVISOR_BOUND`.
 
+Minimal AWQ FlexRound smoke run using the generated asymmetric AWQ scales:
+
+```bash
+python run_quantization_baseline.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/flexround_smoke \
+  --run-name llama31_8b_awq_asym_flexround_smoke \
+  --grid awq \
+  --awq-scales-pt ./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
+  --scheme asymmetric \
+  --assignment flexround \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 1 \
+  --seqlen 128 \
+  --k 0 \
+  --flexround-steps 1 \
+  --flexround-lr 2e-4 \
+  --device-map auto \
+  --input-device auto \
+  --stats-device layer
+```
+
+For FlexRound, `--k 0` selects the lightweight diagonal-plus-mean
+reconstruction surrogate. It avoids full Gram matrices and collects all linear
+layers in one calibration pass. This is intended only for smoke testing; use
+`--k 16`, the full calibration settings, and more optimization steps for the
+actual benchmark.
+
 Vanilla + TFIC:
 
 ```bash

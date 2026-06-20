@@ -45,6 +45,14 @@ NEED_H = {
 KEEP_SIGMA = {"gptq", "tfic"}
 
 
+def assignment_needs_h(name: str, k: int) -> bool:
+    """Return whether collection needs a full Gram matrix for this run."""
+
+    if name == "flexround" and k == 0:
+        return False
+    return NEED_H[name]
+
+
 def build_assignment(name: str, args):
     if name == "rtn":
         return RTNAssignment()
@@ -225,7 +233,10 @@ def main():
     awq_scales_by_layer = load_awq_scales(args.awq_scales_pt) if args.grid == "awq" else {}
     assignment = build_assignment(args.assignment, args)
 
-    need_h = NEED_H[args.assignment]
+    need_h = assignment_needs_h(args.assignment, args.k)
+    # FlexRound can optimize the diagonal-plus-mean surrogate when k=0.
+    # This avoids materializing per-layer d x d Gram matrices and provides a
+    # practical one-pass smoke path. Full benchmark runs should keep k > 0.
     keep_sigma = args.assignment in KEEP_SIGMA
 
     def callback(layer_name, module, stats):
