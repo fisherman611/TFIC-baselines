@@ -25,6 +25,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from eigenflip.statistics.collect_fast import _resolve_input_device
 from runtime_utils import load_runtime_env
 from wandb_utils import collect_ppl_wandb_metrics, log_to_wandb, wandb_enabled_from_env
 
@@ -147,9 +148,10 @@ def main():
     p.add_argument("--wandb-project", type=str, default=os.getenv("WANDB_PROJECT", "tfic-baselines"))
     p.add_argument("--wandb-entity", type=str, default=os.getenv("WANDB_ENTITY"))
     p.add_argument("--wandb-run-name", type=str, default=None)
+    p.add_argument("--device-map", default=os.getenv("MODEL_DEVICE_MAP", "auto"))
+    p.add_argument("--input-device", default=os.getenv("INPUT_DEVICE", "auto"))
     args = p.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print("=" * 70)
@@ -160,10 +162,19 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    device_map = None if args.device_map.lower() == "none" else args.device_map
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, torch_dtype=torch.bfloat16,
-        device_map="auto", trust_remote_code=True)
+        device_map=device_map, trust_remote_code=True)
     model.eval()
+    if device_map is None:
+        if args.input_device == "auto":
+            target_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        else:
+            target_device = args.input_device
+        model.to(target_device)
+    input_device = _resolve_input_device(model, args.input_device)
+    print("devices:", "device_map", args.device_map, "input_device", input_device)
 
     results = {"model_path": args.model_path, "seqlen": args.seqlen, "ppl": {}}
     for ds in args.datasets:
@@ -173,7 +184,7 @@ def main():
         else:
             enc = get_c4_testenc(tok, args.c4_samples, args.seqlen, args.seed,
                                  cache_dir=args.cache_dir)
-        ppl = perplexity(model, enc, args.seqlen, device)
+        ppl = perplexity(model, enc, args.seqlen, input_device)
         results["ppl"][ds] = ppl
         print(f"[{ds}] perplexity = {ppl:.4f}")
 
@@ -199,6 +210,8 @@ def main():
                 "seed": args.seed,
                 "cache_dir": args.cache_dir,
                 "out": out,
+                "device_map": args.device_map,
+                "input_device": str(input_device),
             },
             tags=["eval:ppl"],
             summary={"model_path": args.model_path, "ppl_json": out},

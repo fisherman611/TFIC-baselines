@@ -27,7 +27,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from eigenflip.quantization.awq_scales import compute_awq_scales
-from eigenflip.statistics.collect_fast import is_lm_head
+from eigenflip.statistics.collect_fast import _resolve_input_device, is_lm_head
 from runtime_utils import build_model_slug, load_runtime_env
 
 try:
@@ -119,6 +119,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cache-dir", default="./calibration_cache")
     parser.add_argument("--skip-lm-head", action="store_true", default=True)
+    parser.add_argument("--device-map", default=os.getenv("MODEL_DEVICE_MAP", "auto"))
+    parser.add_argument("--input-device", default=os.getenv("INPUT_DEVICE", "auto"))
     return parser.parse_args()
 
 
@@ -128,17 +130,24 @@ def main():
     load_runtime_env()
     torch.manual_seed(args.seed)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    device_map = None if args.device_map.lower() == "none" else args.device_map
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=True,
     ).eval()
+    if device_map is None:
+        if args.input_device == "auto":
+            target_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        else:
+            target_device = args.input_device
+        model.to(target_device)
+    input_device = _resolve_input_device(model, args.input_device)
 
     calibration = load_calibration(tokenizer, args)
     layers = [
@@ -158,6 +167,7 @@ def main():
     print("scheme:", args.scheme)
     print("bits/group:", args.bits, args.group_size)
     print("calibration:", args.calib_dataset, args.n_calib, args.seqlen)
+    print("devices:", "device_map", args.device_map, "input_device", input_device)
     print("sample tokens per layer:", args.sample_tokens)
     print("out:", out_path)
     print("=" * 70)
@@ -186,7 +196,7 @@ def main():
         for sample in tqdm(calibration, desc="  calib", leave=False):
             try:
                 if torch.is_tensor(sample):
-                    ids = sample.to(device, non_blocking=True)
+                    ids = sample.to(input_device, non_blocking=True)
                     if ids.dim() == 1:
                         ids = ids.unsqueeze(0)
                     model(input_ids=ids, use_cache=False)
@@ -199,7 +209,7 @@ def main():
                         max_length=args.seqlen,
                     )
                     encoded = {
-                        key: value.to(device, non_blocking=True)
+                        key: value.to(input_device, non_blocking=True)
                         for key, value in encoded.items()
                     }
                     model(**encoded, use_cache=False)

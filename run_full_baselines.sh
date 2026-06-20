@@ -40,6 +40,10 @@ CALIB_SEED=${CALIB_SEED:-42}
 EVAL_SEED=${EVAL_SEED:-1234}
 C4_SAMPLES=${C4_SAMPLES:-128}
 
+MODEL_DEVICE_MAP=${MODEL_DEVICE_MAP:-auto}
+INPUT_DEVICE=${INPUT_DEVICE:-auto}
+STATS_DEVICE=${STATS_DEVICE:-layer}
+
 GRIDS=${GRIDS:-"vanilla awq"}
 SCHEMES=${SCHEMES:-"asymmetric symmetric"}
 ASSIGNMENTS=${ASSIGNMENTS:-"rtn gptq tfic"}
@@ -78,6 +82,7 @@ echo "assignments: $ASSIGNMENTS"
 echo "bits/group: W${BITS} g${GROUP_SIZE}"
 echo "calibration: ${CALIB_DATASET}/${N_CALIB}/${SEQLEN} seed=${CALIB_SEED}"
 echo "eval c4: samples=${C4_SAMPLES} seed=${EVAL_SEED}"
+echo "devices: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all} model_device_map=$MODEL_DEVICE_MAP input_device=$INPUT_DEVICE stats_device=$STATS_DEVICE"
 echo "run ppl: $RUN_PPL | run lm-eval: $RUN_LM_EVAL | wandb: $RUN_WANDB | delete checkpoints: $DELETE_CHECKPOINT"
 
 for GRID in $GRIDS; do
@@ -144,6 +149,9 @@ for GRID in $GRIDS; do
         --seqlen "$SEQLEN" \
         --seed "$CALIB_SEED" \
         --layer-batch-size "$LBS" \
+        --device-map "$MODEL_DEVICE_MAP" \
+        --input-device "$INPUT_DEVICE" \
+        --stats-device "$STATS_DEVICE" \
         "${EXTRA_ARGS[@]}"
 
       if [[ ! -d "$CKPT_DIR" ]]; then
@@ -159,6 +167,8 @@ for GRID in $GRIDS; do
           --seqlen "$SEQLEN" \
           --c4-samples "$C4_SAMPLES" \
           --seed "$EVAL_SEED" \
+          --device-map "$MODEL_DEVICE_MAP" \
+          --input-device "$INPUT_DEVICE" \
           --out "$RESULT_DIR/${RUN_NAME}_ppl.json"
       else
         echo ">>> [2/3] PPL eval skipped"

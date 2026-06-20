@@ -37,6 +37,36 @@ def is_lm_head(name: str) -> bool:
     return name.lower().endswith("lm_head") or "lm_head" in name.lower()
 
 
+def _first_parameter_device(model) -> torch.device:
+    for parameter in model.parameters():
+        if parameter.device.type != "meta":
+            return parameter.device
+    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def _resolve_input_device(model, device) -> torch.device:
+    if device is None or str(device).lower() == "auto":
+        return _first_parameter_device(model)
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and resolved.index is None:
+        return torch.device("cuda:0")
+    return resolved
+
+
+def _resolve_stats_device(module: nn.Module, stats_device: str, input_device: torch.device) -> torch.device:
+    mode = str(stats_device).lower()
+    if mode == "layer":
+        return _first_parameter_device(module)
+    if mode == "input":
+        return input_device
+    if mode == "cpu":
+        return torch.device("cpu")
+    resolved = torch.device(stats_device)
+    if resolved.type == "cuda" and resolved.index is None:
+        return torch.device("cuda:0")
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Streaming accumulator: mean-only (O(d)) or full Gram (d x d). fp32 matmul,
 # fp64 buffer. Never stores activations.
@@ -112,11 +142,13 @@ def collect_and_encode_awq_style(
     skip_lm_head=True,
     eig_on_cpu=False,
     max_length=2048,
+    stats_device="layer",
 ):
     """
     calib: list of pre-tokenized [1,L] tensors OR text strings.
     callback(name, module, LayerStats) encodes + writes module.weight.
     """
+    input_device = _resolve_input_device(model, device)
     eig_device = torch.device("cpu") if eig_on_cpu else None
 
     layers = [(n, m) for n, m in model.named_modules()
@@ -135,6 +167,7 @@ def collect_and_encode_awq_style(
     print(f"  {n_layers} layers, {n_batches} batch(es) of {layer_batch_size}, "
           f"need_H={need_H}"
           + ("  [mean-only: single pass]" if not need_H else ""))
+    print(f"  input_device={input_device} stats_device={stats_device}")
 
     for bi in range(n_batches):
         s = bi * layer_batch_size
@@ -143,7 +176,14 @@ def collect_and_encode_awq_style(
         print(f"\n[batch {bi+1}/{n_batches}] layers {s}-{e-1}")
 
         # one accumulator per layer in batch
-        accs = {n: _Acc(m.weight.shape[1], need_H, device) for n, m in batch}
+        accs = {
+            n: _Acc(
+                m.weight.shape[1],
+                need_H,
+                _resolve_stats_device(m, stats_device, input_device),
+            )
+            for n, m in batch
+        }
 
         def mk_hook(nm):
             def hook(_m, inp, _o):
@@ -157,7 +197,7 @@ def collect_and_encode_awq_style(
         for sample in tqdm(calib, desc="  calib", leave=False):
             try:
                 if torch.is_tensor(sample):
-                    ids = sample.to(device, non_blocking=True)
+                    ids = sample.to(input_device, non_blocking=True)
                     if ids.dim() == 1:
                         ids = ids.unsqueeze(0)
                     model(input_ids=ids, use_cache=False)
@@ -165,7 +205,7 @@ def collect_and_encode_awq_style(
                 else:
                     enc = tokenizer(sample, return_tensors="pt",
                                     truncation=True, max_length=max_length)
-                    enc = {kk: vv.to(device, non_blocking=True)
+                    enc = {kk: vv.to(input_device, non_blocking=True)
                            for kk, vv in enc.items()}
                     model(**enc, use_cache=False)
                     del enc

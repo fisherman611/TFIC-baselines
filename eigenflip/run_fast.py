@@ -102,6 +102,9 @@ def main():
     p.add_argument("--cache-dir", default="./calibration_cache")
     p.add_argument("--awq-scales-pt", default=None)
     p.add_argument("--eig-on-cpu", action="store_true")
+    p.add_argument("--device-map", default=os.getenv("MODEL_DEVICE_MAP", "auto"))
+    p.add_argument("--input-device", default=os.getenv("INPUT_DEVICE", "auto"))
+    p.add_argument("--stats-device", default=os.getenv("STATS_DEVICE", "layer"))
     p.add_argument("--clc-knee", type=float, default=-10.0)
     p.add_argument("--clc-budget", type=float, default=1.0)
     p.add_argument("--ef-knee", type=float, default=-10.0)
@@ -124,14 +127,21 @@ def main():
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    input_device = args.input_device
 
     tok = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    device_map = None if args.device_map.lower() == "none" else args.device_map
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_path, dtype=torch.bfloat16, device_map="auto",
+        args.model_path, dtype=torch.bfloat16, device_map=device_map,
         trust_remote_code=True).eval()
+    if device_map is None:
+        if input_device == "auto":
+            target_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        else:
+            target_device = input_device
+        model.to(target_device)
 
     if get_c4_calibration_data is None:
         raise RuntimeError("calibration_utils.py not importable")
@@ -184,14 +194,15 @@ def main():
 
     print(
         f"base={args.base} scheme={args.scheme} encoder={args.encoder} "
-        f"need_H={need_H} k={args.k}"
+        f"need_H={need_H} k={args.k} device_map={args.device_map} "
+        f"input_device={args.input_device} stats_device={args.stats_device}"
     )
     collect_and_encode_awq_style(
-        model, tok, calib, device,
+        model, tok, calib, input_device,
         need_H=need_H, k=args.k, eps=args.eps, callback=callback,
         layer_batch_size=args.layer_batch_size,
         keep_sigma=keep_sigma, skip_lm_head=True, eig_on_cpu=args.eig_on_cpu,
-        max_length=args.seqlen)
+        max_length=args.seqlen, stats_device=args.stats_device)
 
     out = os.path.join(args.output_dir, f"{args.base}_{args.scheme}_{args.encoder}")
     os.makedirs(out, exist_ok=True)

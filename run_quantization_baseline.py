@@ -142,6 +142,21 @@ def parse_args():
     parser.add_argument("--eps", type=float, default=1e-6)
     parser.add_argument("--layer-batch-size", type=int, default=4)
     parser.add_argument("--eig-on-cpu", action="store_true")
+    parser.add_argument(
+        "--device-map",
+        default=os.getenv("MODEL_DEVICE_MAP", "auto"),
+        help="Transformers device_map. Use auto/balanced/balanced_low_0/sequential or none.",
+    )
+    parser.add_argument(
+        "--input-device",
+        default=os.getenv("INPUT_DEVICE", "auto"),
+        help="Device for input_ids during calibration. Default auto uses the first model device.",
+    )
+    parser.add_argument(
+        "--stats-device",
+        default=os.getenv("STATS_DEVICE", "layer"),
+        help="Where streaming stats live: layer, input, cpu, cuda:0, cuda:1, ...",
+    )
 
     parser.add_argument("--gptq-damp", type=float, default=0.01)
     parser.add_argument("--gptq-order", choices=["diag", "natural"], default="diag")
@@ -164,17 +179,24 @@ def main():
     args = parse_args()
     torch.manual_seed(args.seed)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    input_device = args.input_device
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    device_map = None if args.device_map.lower() == "none" else args.device_map
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=True,
     ).eval()
+    if device_map is None:
+        if input_device == "auto":
+            target_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        else:
+            target_device = input_device
+        model.to(target_device)
 
     calibration = load_calibration(tokenizer, args)
     awq_scales_by_layer = load_awq_scales(args.awq_scales_pt) if args.grid == "awq" else {}
@@ -207,12 +229,15 @@ def main():
         f"bits={args.bits}",
         f"group_size={args.group_size}",
         f"need_H={need_h}",
+        f"device_map={args.device_map}",
+        f"input_device={args.input_device}",
+        f"stats_device={args.stats_device}",
     )
     collect_and_encode_awq_style(
         model,
         tokenizer,
         calibration,
-        device,
+        input_device,
         need_H=need_h,
         k=args.k,
         eps=args.eps,
@@ -222,6 +247,7 @@ def main():
         skip_lm_head=True,
         eig_on_cpu=args.eig_on_cpu,
         max_length=args.seqlen,
+        stats_device=args.stats_device,
     )
 
     out = output_path(args)

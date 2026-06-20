@@ -165,6 +165,45 @@ GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
   uv run bash run_full_baselines.sh
 ```
 
+## Multi-GPU Runs
+
+Use `CUDA_VISIBLE_DEVICES` to choose the GPUs visible to the run. The full
+runner passes these settings into quantization and PPL eval:
+
+```text
+MODEL_DEVICE_MAP=auto       Transformers placement policy
+INPUT_DEVICE=auto           input_ids go to the first model device
+STATS_DEVICE=layer          streaming stats/Hessian live on each layer device
+```
+
+Recommended 2-GPU run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+MODEL_DEVICE_MAP=auto \
+INPUT_DEVICE=auto \
+STATS_DEVICE=layer \
+GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="gptq tfic" \
+uv run bash run_full_baselines.sh
+```
+
+Recommended 4-GPU run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+MODEL_DEVICE_MAP=balanced \
+INPUT_DEVICE=auto \
+STATS_DEVICE=layer \
+GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq tfic" \
+uv run bash run_full_baselines.sh
+```
+
+For lower GPU memory at the cost of speed:
+
+```bash
+STATS_DEVICE=cpu uv run bash run_full_baselines.sh
+```
+
 ## Outputs
 
 By default, `run_full_baselines.sh` uses:
