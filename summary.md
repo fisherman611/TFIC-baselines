@@ -618,6 +618,18 @@ Gram construction, allowing the collector to gather all linear-layer moments
 in one model pass. This setting verifies the pipeline only; benchmark runs
 should use `--k 16` and the full calibration/optimization budget.
 
+Smoke all implemented assignment methods:
+
+```powershell
+bash run_assignment_smokes.sh
+```
+
+`run_assignment_smokes.sh` runs RTN, GPTQ, FlexRound, and TFIC on the existing
+asymmetric AWQ grid. It uses one calibration sample, sequence length 128, and
+`--max-layers 1`, so only the first linear layer is quantized. It uses
+`--no-save` to avoid writing four full LLaMA checkpoints. These runs check model
+loading, calibration, grid construction, and assignment only.
+
 ### PPL Evaluation Commands
 
 Evaluate a saved checkpoint on WikiText2 test and C4 validation:

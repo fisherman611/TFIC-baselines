@@ -143,6 +143,7 @@ def collect_and_encode_awq_style(
     eig_on_cpu=False,
     max_length=2048,
     stats_device="layer",
+    max_layers=None,
 ):
     """
     calib: list of pre-tokenized [1,L] tensors OR text strings.
@@ -153,6 +154,10 @@ def collect_and_encode_awq_style(
 
     layers = [(n, m) for n, m in model.named_modules()
               if isinstance(m, nn.Linear) and not (skip_lm_head and is_lm_head(n))]
+    if max_layers is not None:
+        if max_layers <= 0:
+            raise ValueError(f"max_layers must be positive, got {max_layers}")
+        layers = layers[:max_layers]
     n_layers = len(layers)
 
     # KEY SPEED FIX: mean-only (rtn/clc) costs O(d) per layer -> hook ALL layers

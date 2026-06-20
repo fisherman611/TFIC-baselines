@@ -297,6 +297,32 @@ layers in one calibration pass. This is intended only for smoke testing; use
 `--k 16`, the full calibration settings, and more optimization steps for the
 actual benchmark.
 
+Run smoke checks for every implemented assignment method:
+
+```bash
+bash run_assignment_smokes.sh
+```
+
+The script runs `rtn`, `gptq`, `flexround`, and `tfic` against the existing
+asymmetric AWQ scale file. Each cell uses one calibration sample and quantizes
+only the first linear layer via `--max-layers 1`. It also passes `--no-save`,
+so the four smoke cells do not write four full LLaMA checkpoints. The script
+verifies model loading, calibration, grid construction, and assignment only.
+
+Run selected methods only:
+
+```bash
+METHODS="rtn flexround" bash run_assignment_smokes.sh
+```
+
+Override model or AWQ scale paths when necessary:
+
+```bash
+MODEL_PATH=/path/to/model \
+AWQ_SCALES_PT=/path/to/awq_scales.pt \
+bash run_assignment_smokes.sh
+```
+
 Vanilla + TFIC:
 
 ```bash

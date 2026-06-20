@@ -146,6 +146,11 @@ def parse_args():
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output-dir", default="./quantized_models/baselines")
     parser.add_argument("--run-name", default=None)
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Run quantization without writing a checkpoint; intended for smoke tests.",
+    )
 
     parser.add_argument("--grid", choices=["vanilla", "awq"], required=True)
     parser.add_argument("--assignment", choices=sorted(NEED_H), required=True)
@@ -162,6 +167,12 @@ def parse_args():
     parser.add_argument("--k", type=int, default=16)
     parser.add_argument("--eps", type=float, default=1e-6)
     parser.add_argument("--layer-batch-size", type=int, default=4)
+    parser.add_argument(
+        "--max-layers",
+        type=int,
+        default=None,
+        help="Quantize only the first N linear layers; intended for smoke tests.",
+    )
     parser.add_argument("--eig-on-cpu", action="store_true")
     parser.add_argument(
         "--device-map",
@@ -288,7 +299,12 @@ def main():
         eig_on_cpu=args.eig_on_cpu,
         max_length=args.seqlen,
         stats_device=args.stats_device,
+        max_layers=args.max_layers,
     )
+
+    if args.no_save:
+        print("quantization completed; checkpoint save skipped (--no-save)")
+        return
 
     out = output_path(args)
     os.makedirs(out, exist_ok=True)
