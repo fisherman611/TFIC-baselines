@@ -23,6 +23,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from assignment_methods import (
     FlexRoundAssignment,
     GPTAQAssignment,
+    GPTAQResCompAssignment,
     GPTQAssignment,
     RTNAssignment,
     TFICAssignment,
@@ -41,10 +42,12 @@ NEED_H = {
     "flexround": True,
     "rtn": False,
     "gptaq": True,
+    "gptaq_rescomp": True,
     "gptq": True,
     "tfic": True,
 }
-KEEP_SIGMA = {"gptaq", "gptq", "tfic"}
+KEEP_SIGMA = {"gptaq", "gptaq_rescomp", "gptq", "tfic"}
+PAIRED_ASSIGNMENTS = {"gptaq", "gptaq_rescomp"}
 
 
 def assignment_needs_h(name: str, k: int) -> bool:
@@ -65,6 +68,14 @@ def build_assignment(name: str, args):
             damp=args.gptaq_damp,
             block_size=args.gptaq_block_size,
             alpha=args.gptaq_alpha,
+            act_order=args.gptaq_act_order,
+        )
+    if name == "gptaq_rescomp":
+        return GPTAQResCompAssignment(
+            damp=args.gptaq_damp,
+            block_size=args.gptaq_block_size,
+            alpha=args.gptaq_alpha,
+            rescomp_alpha=args.rescomp_alpha,
             act_order=args.gptaq_act_order,
         )
     if name == "flexround":
@@ -206,6 +217,7 @@ def parse_args():
     parser.add_argument("--gptaq-block-size", type=int, default=128)
     parser.add_argument("--gptaq-alpha", type=float, default=0.25)
     parser.add_argument("--gptaq-act-order", action="store_true")
+    parser.add_argument("--rescomp-alpha", type=float, default=1.0)
     parser.add_argument(
         "--gptaq-cache-dtype",
         choices=["float16", "bfloat16", "float32"],
@@ -325,7 +337,7 @@ def main():
         max_length=args.seqlen,
         stats_device=args.stats_device,
         max_layers=args.max_layers,
-        paired_full_precision=args.assignment == "gptaq",
+        paired_full_precision=args.assignment in PAIRED_ASSIGNMENTS,
         paired_cache_dtype=gptaq_cache_dtype,
     )
 

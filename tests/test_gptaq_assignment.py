@@ -5,6 +5,7 @@ import torch
 
 from assignment_methods import (
     GPTAQAssignment,
+    GPTAQResCompAssignment,
     GPTQAssignment,
     stats_from_paired_inputs,
 )
@@ -112,6 +113,49 @@ def test_gptaq_uses_asymmetry_to_improve_paired_output_reconstruction():
     assert matched
 
 
+@pytest.mark.parametrize("grid", toy_vanilla_grids() + toy_awq_grids())
+def test_gptaq_rescomp_zero_rescomp_alpha_matches_gptaq(grid):
+    quantized = paired_inputs()
+    reference = quantized + 0.25 * torch.flip(quantized, dims=[1])
+    stats = stats_from_paired_inputs(quantized, reference)
+
+    gptaq_output, gptaq_info = GPTAQAssignment(
+        damp=0.01,
+        block_size=2,
+        alpha=1.0,
+    ).apply_to_grid(grid, stats)
+    rescomp_output, rescomp_info = GPTAQResCompAssignment(
+        damp=0.01,
+        block_size=2,
+        alpha=1.0,
+        rescomp_alpha=0.0,
+    ).apply_to_grid(grid, stats)
+
+    assert rescomp_info["assignment"] == "gptaq_rescomp"
+    assert torch.equal(rescomp_info["codes"], gptaq_info["codes"])
+    assert torch.equal(rescomp_output, gptaq_output)
+
+
+@pytest.mark.parametrize("grid", toy_vanilla_grids() + toy_awq_grids())
+def test_gptaq_rescomp_runs_on_fixed_grids_and_returns_valid_codes(grid):
+    quantized = paired_inputs()
+    reference = quantized + 0.25 * torch.flip(quantized, dims=[1])
+    stats = stats_from_paired_inputs(quantized, reference)
+    output, info = GPTAQResCompAssignment(
+        damp=0.01,
+        block_size=2,
+        alpha=1.0,
+        rescomp_alpha=1.0,
+    ).apply_to_grid(grid, stats)
+
+    assert output.shape == grid.float_weights[:, : grid.in_features].shape
+    assert output.dtype == grid.original_dtype
+    assert info["grid_scheme"] == grid.scheme
+    assert info["rescomp_alpha"] == 1.0
+    assert torch.all(info["codes"] >= grid.qmin)
+    assert torch.all(info["codes"] <= grid.qmax)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -123,3 +167,17 @@ def test_gptaq_uses_asymmetry_to_improve_paired_output_reconstruction():
 def test_gptaq_rejects_invalid_hyperparameters(kwargs, message):
     with pytest.raises(ValueError, match=message):
         GPTAQAssignment(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"damp": -0.1}, "damp"),
+        ({"block_size": 0}, "block_size"),
+        ({"alpha": -1.0}, "alpha"),
+        ({"rescomp_alpha": -1.0}, "rescomp_alpha"),
+    ],
+)
+def test_gptaq_rescomp_rejects_invalid_hyperparameters(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        GPTAQResCompAssignment(**kwargs)

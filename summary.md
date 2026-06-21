@@ -242,8 +242,8 @@ IntegerQuantizedTensorState.from_awq(
 
 Status: implemented in `assignment_methods/`.
 
-These modules expose RTN, GPTQ, GPTAQ, FlexRound, and TFIC through a common
-fixed-grid assignment interface.
+These modules expose RTN, GPTQ, GPTAQ, GPTAQ+ResComp, FlexRound, and TFIC
+through a common fixed-grid assignment interface.
 
 ### RTN
 
@@ -320,6 +320,38 @@ batches, temporarily restores previous layers to their full-precision weights
 to collect `X_fp`, restores the quantized path to collect `X_quant`, and stores
 `delta_cross`. Missing `delta_cross` still raises an error instead of silently
 running GPTQ under the GPTAQ label.
+
+### GPTAQ + ResComp
+
+Status: implemented as `GPTAQResCompAssignment` in
+`assignment_methods/gptaq_rescomp.py` and exposed in the runner as
+`gptaq_rescomp`.
+
+ResComp adds the compensation-aware residual from *Rethinking Residual Errors
+in Compensation-based LLM Quantization* to GPTAQ's paired calibration. GPTAQ
+uses:
+
+```text
+r1 = W^(q) (X_fp - X_quant)
+P1 = alpha * triu(dXXT U^T, diagonal=1) U
+```
+
+ResComp additionally accounts for the intra-layer difference between original
+and compensated weights:
+
+```text
+r2 = (W0 - W^(q)) X_fp
+P2 = rescomp_alpha * triu((H + dXXT) U^T, diagonal=1) U
+```
+
+The lazy block update becomes GPTAQ's update plus the `P2` term:
+
+```text
+W <- W - E U + W P1 + (W0 - W) P2
+```
+
+Like GPTAQ, it keeps the selected Vanilla/AWQ scale and zero-point fixed and
+uses the paired whole-model collector.
 
 ### FlexRound
 

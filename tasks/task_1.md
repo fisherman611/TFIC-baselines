@@ -18,7 +18,7 @@ We compare the following assignment methods:
 - [X] ~~**GPTQ**~~
 - [X] ~~**FlexRound**~~
 - [X] ~~**GPTAQ**~~
-- [ ] **GPTAQ + ResComp**
+- [X] ~~**GPTAQ + ResComp**~~
 - [X] ~~**TFIC**~~
 
 `GPTAQ + ResComp` is based on *Rethinking Residual Errors in Compensation-based LLM Quantization*, ICLR 2026.
