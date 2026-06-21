@@ -217,7 +217,7 @@ def parse_args():
     parser.add_argument("--gptaq-block-size", type=int, default=128)
     parser.add_argument("--gptaq-alpha", type=float, default=0.25)
     parser.add_argument("--gptaq-act-order", action="store_true")
-    parser.add_argument("--rescomp-alpha", type=float, default=1.0)
+    parser.add_argument("--rescomp-alpha", type=float, default=0.25)
     parser.add_argument(
         "--gptaq-cache-dtype",
         choices=["float16", "bfloat16", "float32"],

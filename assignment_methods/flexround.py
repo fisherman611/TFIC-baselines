@@ -5,10 +5,13 @@ This module adapts FlexRound's element-wise division rule to this repository's
 fixed so Vanilla, AWQ, and future grid baselines remain directly comparable.
 Only the integer-code assignment is learned.
 
-For a positive learned divisor ``S`` the fake-quantized weight is
+For a fixed base grid scale ``delta1 = log(scale)`` and a positive learned
+FlexRound divisor ``S`` the fake-quantized weight follows the official
+``delta1 + delta2 + delta3`` parameterization:
 
-    q     = clip(round(W / (scale * S) + zero_point), qmin, qmax)
-    W_hat = (q - zero_point) * scale
+    q_signed = clip(round(W / exp(delta1 + log(S))),
+                    qmin - zero_point, qmax - zero_point)
+    W_hat    = q_signed * exp(delta1)
 
 ``S`` is factorized into an element-wise term and, optionally, a shared output
 channel term as in FlexRound's linear-layer formulation.  The parameters are
@@ -72,25 +75,27 @@ class FlexRoundAssignment:
     def _fake_quantize(
         self,
         weights: torch.Tensor,
-        scale: torch.Tensor,
+        log_base_scale: torch.Tensor,
         zero_point: torch.Tensor,
-        log_element_scale: torch.Tensor,
+        log_element_divisor: torch.Tensor,
         log_row_scale: torch.Tensor | None,
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        log_divisor = log_element_scale
+        log_divisor = log_element_divisor
         if log_row_scale is not None:
             log_divisor = log_divisor + log_row_scale
-        divisor = torch.exp(
-            log_divisor.clamp(
-                min=-self.log_divisor_bound,
-                max=self.log_divisor_bound,
-            )
+        log_quant_scale = log_base_scale + log_divisor.clamp(
+            min=-self.log_divisor_bound,
+            max=self.log_divisor_bound,
         )
-        pre_round = weights / (scale * divisor) + zero_point
-        codes = _ste_round(pre_round).clamp(qmin, qmax)
-        return codes, (codes - zero_point) * scale
+        signed_codes = _ste_round(weights / torch.exp(log_quant_scale)).clamp(
+            qmin - zero_point,
+            qmax - zero_point,
+        )
+        return signed_codes + zero_point, signed_codes * torch.exp(
+            log_base_scale
+        )
 
     @staticmethod
     def _reconstruction_loss(
@@ -125,6 +130,7 @@ class FlexRoundAssignment:
         dtype = self.work_dtype
         padded_weights = grid.float_weights.detach().to(device=device, dtype=dtype)
         scale = grid.scale.detach().to(device=device, dtype=dtype)
+        log_base_scale = scale.log()
         zero_point = grid.zero_point.detach().to(device=device, dtype=dtype)
         diagonal = stats.D.detach().to(device=device, dtype=dtype)
         low_rank = stats.V.detach().to(device=device, dtype=dtype)
@@ -174,7 +180,7 @@ class FlexRoundAssignment:
                 optimizer.zero_grad(set_to_none=True)
                 codes, dequantized = self._fake_quantize(
                     padded_weights,
-                    scale,
+                    log_base_scale,
                     zero_point,
                     log_element_scale,
                     log_row_scale,
@@ -198,7 +204,7 @@ class FlexRoundAssignment:
             with torch.no_grad():
                 final_codes, final_dequantized = self._fake_quantize(
                     padded_weights,
-                    scale,
+                    log_base_scale,
                     zero_point,
                     log_element_scale,
                     log_row_scale,

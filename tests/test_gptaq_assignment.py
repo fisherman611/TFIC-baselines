@@ -9,6 +9,7 @@ from assignment_methods import (
     GPTQAssignment,
     stats_from_paired_inputs,
 )
+from grid_baselines import build_vanilla_quantization_grid
 from tests.examples import toy_awq_grids, toy_vanilla_grids
 
 
@@ -152,6 +153,36 @@ def test_gptaq_rescomp_runs_on_fixed_grids_and_returns_valid_codes(grid):
     assert output.dtype == grid.original_dtype
     assert info["grid_scheme"] == grid.scheme
     assert info["rescomp_alpha"] == 1.0
+    assert info["rescomp_mode"] == "org"
+    assert torch.all(info["codes"] >= grid.qmin)
+    assert torch.all(info["codes"] <= grid.qmax)
+
+
+def test_gptaq_rescomp_defaults_match_rescomp_reference_for_3bit():
+    grid = build_vanilla_quantization_grid(
+        torch.tensor(
+            [
+                [0.8240, -0.4536, 0.0149, 0.6145, 0.3457],
+                [0.1212, 0.8362, 0.2279, 0.6728, -0.8618],
+            ],
+            dtype=torch.float32,
+        ),
+        bits=3,
+        group_size=5,
+        scheme="asymmetric",
+    )
+    quantized = paired_inputs()
+    reference = quantized + 0.25 * torch.flip(quantized, dims=[1])
+    stats = stats_from_paired_inputs(quantized, reference)
+
+    _output, info = GPTAQResCompAssignment(
+        damp=0.01,
+        block_size=2,
+        alpha=1.0,
+    ).apply_to_grid(grid, stats)
+
+    assert info["rescomp_alpha"] == 0.25
+    assert info["rescomp_mode"] == "allw"
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)
 

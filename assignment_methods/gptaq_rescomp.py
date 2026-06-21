@@ -18,7 +18,7 @@ class GPTAQResCompAssignment:
         damp: float = 0.01,
         block_size: int = 128,
         alpha: float = 0.25,
-        rescomp_alpha: float = 1.0,
+        rescomp_alpha: float = 0.25,
         act_order: bool = False,
         work_dtype: torch.dtype = torch.float64,
     ):
@@ -115,8 +115,8 @@ class GPTAQResCompAssignment:
         diagonal_idx = torch.arange(padded_in, device=device)
         hessian[diagonal_idx, diagonal_idx] += self.damp * diagonal_mean
 
-        # U is the upper Cholesky factor of H^-1. P1 is GPTAQ's input-asymmetry
-        # correction; P2 is ResComp's compensation-aware correction.
+        # U is the upper Cholesky factor of H^-1. P is GPTAQ's input-asymmetry
+        # correction; R is ResComp's compensation-aware residual correction.
         hessian_cholesky = torch.linalg.cholesky(hessian)
         inverse_hessian = torch.cholesky_inverse(hessian_cholesky)
         inverse_factor = torch.linalg.cholesky(inverse_hessian, upper=True)
@@ -127,12 +127,17 @@ class GPTAQResCompAssignment:
             (hessian + delta_cross) @ inverse_factor.t(), diagonal=1
         ) @ inverse_factor
 
+        mode = "org" if grid.bits == 2 else "allw"
         codes = torch.zeros_like(weights)
         for start in range(0, padded_in, self.block_size):
             end = min(start + self.block_size, padded_in)
             count = end - start
             block_weights = weights[:, start:end].clone()
             block_original_weights = original_weights[:, start:end]
+            block_scale = scale[:, start:end]
+            block_zero_point = zero_point[:, start:end]
+            block_lower_bound = (grid.qmin - block_zero_point) * block_scale
+            block_upper_bound = (grid.qmax - block_zero_point) * block_scale
             block_codes = torch.zeros_like(block_weights)
             block_errors = torch.zeros_like(block_weights)
             block_factor = inverse_factor[start:end, start:end]
@@ -152,25 +157,38 @@ class GPTAQResCompAssignment:
                 block_codes[:, offset] = column_codes
 
                 error = (column - quantized_column) / factor_diagonal
-                block_weights[:, offset:] -= error.unsqueeze(1) * block_factor[
-                    offset, offset:
-                ].unsqueeze(0)
-                block_weights[:, offset:] += column.unsqueeze(1) * block_correction[
-                    offset, offset:
-                ].unsqueeze(0)
+                if mode == "org":
+                    update_slice = slice(offset, None)
+                else:
+                    update_slice = slice(offset + 1, None)
+                block_weights[:, update_slice] -= (
+                    error.unsqueeze(1)
+                    * block_factor[offset, update_slice].unsqueeze(0)
+                )
+                block_weights[:, update_slice] += (
+                    column.unsqueeze(1)
+                    * block_correction[offset, update_slice].unsqueeze(0)
+                )
                 compensation_gap = original_column - column
-                block_weights[:, offset:] += (
+                block_weights[:, update_slice] += (
                     compensation_gap.unsqueeze(1)
-                    * block_rescomp_correction[offset, offset:].unsqueeze(0)
+                    * block_rescomp_correction[offset, update_slice].unsqueeze(0)
                 )
                 block_errors[:, offset] = error
 
             codes[:, start:end] = block_codes
             if end < padded_in:
                 weights[:, end:] -= block_errors @ inverse_factor[start:end, end:]
-                weights[:, end:] += block_weights @ correction[start:end, end:]
+                if mode == "org":
+                    compensated_weights = block_weights
+                else:
+                    compensated_weights = torch.minimum(
+                        torch.maximum(block_weights, block_lower_bound),
+                        block_upper_bound,
+                    )
+                weights[:, end:] += compensated_weights @ correction[start:end, end:]
                 weights[:, end:] += (
-                    original_weights[:, start:end] - block_weights
+                    original_weights[:, start:end] - compensated_weights
                 ) @ rescomp_correction[start:end, end:]
 
         if inverse_permutation is not None:
@@ -194,6 +212,7 @@ class GPTAQResCompAssignment:
             "block_size": self.block_size,
             "alpha": self.alpha,
             "rescomp_alpha": self.rescomp_alpha,
+            "rescomp_mode": mode,
             "act_order": self.act_order,
             "changed_codes": changed_from_rtn,
         }

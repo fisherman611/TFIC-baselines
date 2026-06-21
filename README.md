@@ -62,6 +62,9 @@ earlier layers.
 from *Rethinking Residual Errors in Compensation-based LLM Quantization*,
 reuses the paired GPTAQ statistics, and adds the `P2` correction from
 `X_fp^T X_quant = H + dXXT` while keeping the same fixed Vanilla/AWQ grid.
+The default residual scale follows the reference implementation
+(`rescomp_alpha=0.25`), with 2-bit using the original GPTAQ-style update and
+3-bit or higher using ResComp's `allw` update.
 
 ```python
 from assignment_methods import GPTAQAssignment, stats_from_paired_inputs

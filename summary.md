@@ -344,6 +344,11 @@ r2 = (W0 - W^(q)) X_fp
 P2 = rescomp_alpha * triu((H + dXXT) U^T, diagonal=1) U
 ```
 
+The default `rescomp_alpha` is `0.25`, matching the reference code's
+`alpha2`. The implementation also mirrors its mode switch: 2-bit grids use the
+original GPTAQ-style `org` update, while 3-bit and higher grids use the
+`allw` update with clamped block weights in the outer-block correction.
+
 The lazy block update becomes GPTAQ's update plus the `P2` term:
 
 ```text
