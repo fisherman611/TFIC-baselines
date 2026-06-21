@@ -32,7 +32,6 @@ import torch
 
 from eigenflip.statistics.trust_region import LayerStats
 
-
 def _ste_round(values: torch.Tensor) -> torch.Tensor:
     """Round in the forward pass and use the identity gradient backward."""
 

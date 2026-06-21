@@ -6,7 +6,6 @@ import torch
 
 from eigenflip.statistics.trust_region import LayerStats
 
-
 class GPTAQResCompAssignment:
     """GPTAQ lazy block assignment with ResComp's compensation-aware error."""
 

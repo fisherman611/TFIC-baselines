@@ -10,6 +10,7 @@ set -euo pipefail
 #   MODEL_PATH=meta-llama/Meta-Llama-3.1-8B AWQ_SCALES_PT=./awq_scales.pt bash run_full_baselines.sh
 #   AWQ_SCALES_PT_ASYMMETRIC=./awq_asym.pt AWQ_SCALES_PT_SYMMETRIC=./awq_sym.pt bash run_full_baselines.sh
 #   FLATQUANT_PARAMS_PT=./flatquant_diag_params.pt GRIDS="flatquant_diag" bash run_full_baselines.sh
+#   SPINQUANT_ROTATIONS_PT=./R.bin GRIDS="spinquant" bash run_full_baselines.sh
 #
 # To run fewer cells:
 #
@@ -59,6 +60,9 @@ AWQ_SCALES_PT_SYMMETRIC=${AWQ_SCALES_PT_SYMMETRIC:-}
 FLATQUANT_PARAMS_PT=${FLATQUANT_PARAMS_PT:-}
 FLATQUANT_PARAMS_PT_ASYMMETRIC=${FLATQUANT_PARAMS_PT_ASYMMETRIC:-}
 FLATQUANT_PARAMS_PT_SYMMETRIC=${FLATQUANT_PARAMS_PT_SYMMETRIC:-}
+SPINQUANT_ROTATIONS_PT=${SPINQUANT_ROTATIONS_PT:-}
+SPINQUANT_RANDOM_ROTATIONS=${SPINQUANT_RANDOM_ROTATIONS:-0}
+SPINQUANT_RANDOM_SEED=${SPINQUANT_RANDOM_SEED:-$CALIB_SEED}
 
 RUN_PPL=${RUN_PPL:-1}
 RUN_LM_EVAL=${RUN_LM_EVAL:-1}
@@ -166,6 +170,21 @@ for GRID in $GRIDS; do
           continue
         fi
         GRID_ARGS+=(--flatquant-params-pt "$SCHEME_FLATQUANT_PARAMS_PT")
+      fi
+      if [[ "$GRID" == "spinquant" ]]; then
+        if [[ -n "$SPINQUANT_ROTATIONS_PT" ]]; then
+          GRID_ARGS+=(--spinquant-rotations-pt "$SPINQUANT_ROTATIONS_PT")
+        elif [[ "$SPINQUANT_RANDOM_ROTATIONS" == "1" ]]; then
+          GRID_ARGS+=(
+            --spinquant-random-rotations
+            --spinquant-random-seed "$SPINQUANT_RANDOM_SEED"
+          )
+        else
+          echo
+          echo "!!! skipping grid=spinquant scheme=$SCHEME because no SpinQuant rotations are set"
+          echo "!!! set SPINQUANT_ROTATIONS_PT, or SPINQUANT_RANDOM_ROTATIONS=1 for smoke/debug runs"
+          continue
+        fi
       fi
 
       echo

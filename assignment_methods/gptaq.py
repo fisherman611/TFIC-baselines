@@ -17,7 +17,6 @@ import torch
 
 from eigenflip.statistics.trust_region import LayerStats
 
-
 def stats_from_paired_inputs(
     quantized_inputs: torch.Tensor,
     full_precision_inputs: torch.Tensor,

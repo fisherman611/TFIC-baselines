@@ -31,9 +31,13 @@ from assignment_methods import (
 from eigenflip.quantization.awq_scales import scales_from_awq_run
 from eigenflip.statistics.collect_fast import collect_and_encode_awq_style
 from grid_baselines import (
+    apply_spinquant_no_had,
     build_awq_quantization_grid,
     build_flatquant_diag_quantization_grid,
+    build_spinquant_quantization_grid,
     build_vanilla_quantization_grid,
+    load_spinquant_rotations,
+    random_spinquant_rotations,
 )
 
 try:
@@ -205,6 +209,13 @@ def build_grid(
             scheme=args.scheme,
             weight_clip=flatquant_diag_params.get("weight_clip", 1.0),
         )
+    if name == 'spinquant':
+        return build_spinquant_quantization_grid(
+            weights,
+            bits=args.bits,
+            group_size=args.group_size,
+            scheme=args.scheme,
+        )
     raise ValueError(f"unknown grid baseline: {name}")
 
 
@@ -247,7 +258,11 @@ def parse_args():
         help="Run quantization without writing a checkpoint; intended for smoke tests.",
     )
 
-    parser.add_argument("--grid", choices=["vanilla", "awq", "flatquant_diag"], required=True)
+    parser.add_argument(
+        '--grid',
+        choices=['vanilla', 'awq', 'flatquant_diag', 'spinquant'],
+        required=True,
+    )
     parser.add_argument("--assignment", choices=sorted(NEED_H), required=True)
     parser.add_argument("--scheme", choices=["asymmetric", "symmetric"], default="asymmetric")
     parser.add_argument("--bits", type=int, default=3, choices=[2, 3, 4, 8])
@@ -261,6 +276,35 @@ def parse_args():
             "{layer: scale_tensor} or {layer: {'scales': tensor, "
             "'weight_clip': scalar}}."
         ),
+    )
+
+    parser.add_argument(
+        '--spinquant-rotations-pt',
+        default=None,
+        help=(
+            'Official learned SpinQuant checkpoint containing R1 and '
+            'model.layers.{i}.self_attn.R2.'
+        ),
+    )
+    parser.add_argument(
+        '--spinquant-work-dtype',
+        choices=['float32', 'float64'],
+        default='float64',
+        help='Compute dtype used while absorbing SpinQuant rotations.',
+    )
+    parser.add_argument(
+        '--spinquant-random-rotations',
+        action='store_true',
+        help=(
+            'Generate random orthogonal R1/R2 rotations instead of loading a '
+            'learned SpinQuant checkpoint. Intended for smoke/debug runs.'
+        ),
+    )
+    parser.add_argument(
+        '--spinquant-random-seed',
+        type=int,
+        default=None,
+        help='Seed for --spinquant-random-rotations. Defaults to --seed.',
     )
 
     parser.add_argument("--calib-dataset", choices=["c4", "wikitext2"], default="c4")
@@ -356,6 +400,44 @@ def main():
             target_device = input_device
         model.to(target_device)
 
+    if args.grid == 'spinquant':
+        if args.spinquant_rotations_pt and args.spinquant_random_rotations:
+            raise ValueError(
+                'use either --spinquant-rotations-pt or '
+                '--spinquant-random-rotations, not both'
+            )
+        if not args.spinquant_rotations_pt and not args.spinquant_random_rotations:
+            raise ValueError(
+                '--grid spinquant requires --spinquant-rotations-pt or '
+                '--spinquant-random-rotations'
+            )
+        head_dim = model.config.hidden_size // model.config.num_attention_heads
+        if args.spinquant_random_rotations:
+            rotations = random_spinquant_rotations(
+                num_layers=model.config.num_hidden_layers,
+                hidden_size=model.config.hidden_size,
+                head_dim=head_dim,
+                seed=args.seed
+                if args.spinquant_random_seed is None
+                else args.spinquant_random_seed,
+            )
+        else:
+            rotations = load_spinquant_rotations(
+                args.spinquant_rotations_pt,
+                num_layers=model.config.num_hidden_layers,
+                hidden_size=model.config.hidden_size,
+                head_dim=head_dim,
+            )
+        work_dtype = {
+            'float32': torch.float32,
+            'float64': torch.float64,
+        }[args.spinquant_work_dtype]
+        apply_spinquant_no_had(
+            model,
+            rotations,
+            work_dtype=work_dtype,
+        )
+
     calibration = load_calibration(tokenizer, args)
     awq_scales_by_layer = load_awq_scales(args.awq_scales_pt) if args.grid == "awq" else {}
     flatquant_diag_by_layer = (
@@ -388,7 +470,6 @@ def main():
             layer_flatquant_diag_params = flatquant_diag_by_layer.get(layer_name)
             if layer_flatquant_diag_params is None:
                 raise KeyError(f"no FlatQuant diag params for layer {layer_name!r}")
-
         grid = build_grid(
             args.grid,
             weights,

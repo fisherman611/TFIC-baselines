@@ -2,8 +2,8 @@
 
 This repository contains post-training quantization baselines for studying:
 
-- quantization grids / transforms: Vanilla, AWQ, and the FlatQuant
-  diagonal-scale ablation grid are implemented
+- quantization grids / transforms: Vanilla, AWQ, the FlatQuant
+  diagonal-scale ablation grid, and SpinQuant no-had rotation absorption are implemented
 - assignment methods: RTN, GPTQ, GPTAQ, GPTAQ+ResComp, fixed-grid FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
 
@@ -29,6 +29,7 @@ Grid baselines:
 vanilla: symmetric and asymmetric
 awq:     symmetric and asymmetric
 flatquant_diag: symmetric and asymmetric per-channel scale/clipping grid
+spinquant: learned or random no-had R1/R2 rotation absorption, then symmetric/asymmetric grid
 ```
 
 Assignment methods:
@@ -76,6 +77,14 @@ the official repo. Full FlatQuant's non-diagonal Kronecker affine transforms
 require online activation/KV-cache transforms and model reparameterization, so
 they must be integrated at the model-forward level before assignment methods
 can be applied correctly.
+
+`spinquant` implements the SpinQuant no-had inference path for LLaMA/Mistral-
+style models: it fuses RMSNorm scales, absorbs learned residual rotation `R1`
+and per-layer value/output-head rotation `R2`, then applies the selected
+assignment method to the ordinary uniform weight grid. Use
+`--spinquant-rotations-pt` for a learned checkpoint containing `R1` and
+`model.layers.{i}.self_attn.R2`. `--spinquant-random-rotations` exists only for
+pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
 
 ```python
 from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
@@ -348,6 +357,28 @@ or to a dict with optional clipping:
     }
 }
 ```
+
+SpinQuant no-had + RTN with learned rotations:
+
+```bash
+uv run python run_quantization_baseline.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/baselines_llama31_8b \
+  --run-name llama31_8b_spinquant_asymmetric_rtn_w3g128_c4n128 \
+  --grid spinquant \
+  --spinquant-rotations-pt ./outputs/spinquant/llama31_8b_R.bin \
+  --scheme asymmetric \
+  --assignment rtn \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048
+```
+
+For a one-layer smoke run without a learned checkpoint, replace the rotations
+path with `--spinquant-random-rotations --spinquant-random-seed 42` and add
+`--no-save --n-calib 1 --seqlen 128 --max-layers 1`.
 
 Minimal AWQ FlexRound smoke run using the generated asymmetric AWQ scales:
 

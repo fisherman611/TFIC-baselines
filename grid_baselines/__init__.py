@@ -12,6 +12,17 @@ from .flatquant_quantization_grid import (
     build_flatquant_diag_quantization_grid,
     build_symmetric_flatquant_diag_quantization_grid,
 )
+from .spinquant_quantization_grid import (
+    SpinQuantQuantizationGrid,
+    SpinQuantRotations,
+    apply_spinquant_no_had,
+    build_asymmetric_spinquant_quantization_grid,
+    build_spinquant_quantization_grid,
+    build_symmetric_spinquant_quantization_grid,
+    fuse_spinquant_norms,
+    load_spinquant_rotations,
+    random_spinquant_rotations,
+)
 from .vanilla_quantization_grid import (
     VanillaQuantizationGrid,
     build_asymmetric_vanilla_quantization_grid,
@@ -20,6 +31,15 @@ from .vanilla_quantization_grid import (
 )
 
 __all__ = [
+    'SpinQuantQuantizationGrid',
+    'SpinQuantRotations',
+    'apply_spinquant_no_had',
+    'build_asymmetric_spinquant_quantization_grid',
+    'build_spinquant_quantization_grid',
+    'build_symmetric_spinquant_quantization_grid',
+    'fuse_spinquant_norms',
+    'load_spinquant_rotations',
+    'random_spinquant_rotations',
     "AWQQuantizationGrid",
     "FlatQuantDiagQuantizationGrid",
     "VanillaQuantizationGrid",
