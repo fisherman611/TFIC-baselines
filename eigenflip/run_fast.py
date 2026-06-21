@@ -7,6 +7,13 @@ for a 224-layer model -- NOT one pass per layer.
 """
 from __future__ import annotations
 import argparse, os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
