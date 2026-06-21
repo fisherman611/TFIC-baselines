@@ -41,12 +41,13 @@ The assignment methods will be applied on top of the following quantization grid
 - [X] ~~**AWQ**~~
 - [X] ~~**FlatQuant**~~
 - [X] ~~**SpinQuant**~~
-- [ ] **NeUQI**
+- [X] ~~**NeUQI**~~
 
 Implemented support note:
 
 - [X] ~~**SpinQuant no-had learned rotation grid (`spinquant`)**~~
 - [X] ~~**FlatQuant diagonal-scale fixed grid (`flatquant_diag`)**~~
+- [X] ~~**NeUQI Hessian-diagonal affine grid (`neuqi`)**~~
 
 `flatquant_diag` is not the full FlatQuant baseline. It only covers the
 fixed-grid-compatible diagonal scale and weight clipping subset. Full
@@ -57,6 +58,11 @@ learned affine/Kronecker transforms.
 models, then quantizes the rotated weights on the existing uniform grid. Full
 SpinQuant still requires Cayley-SGD rotation learning plus optional online
 Hadamard `R3`/`R4`, activation quantization, and KV-cache quantization paths.
+
+`neuqi` initializes an asymmetric affine uniform grid with calibration
+`diag_H`, a scale search, and floating-point zero-points. It is a grid
+initialization baseline, so the existing assignment methods can run on top of
+its fixed `scale`/`zero_point`.
 
 AWQ is the first priority.
 

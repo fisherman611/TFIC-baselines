@@ -12,6 +12,11 @@ from .flatquant_quantization_grid import (
     build_flatquant_diag_quantization_grid,
     build_symmetric_flatquant_diag_quantization_grid,
 )
+from .neuqi_quantization_grid import (
+    NeUQIQuantizationGrid,
+    build_asymmetric_neuqi_quantization_grid,
+    build_neuqi_quantization_grid,
+)
 from .spinquant_quantization_grid import (
     SpinQuantQuantizationGrid,
     SpinQuantRotations,
@@ -42,9 +47,12 @@ __all__ = [
     'random_spinquant_rotations',
     "AWQQuantizationGrid",
     "FlatQuantDiagQuantizationGrid",
+    "NeUQIQuantizationGrid",
     "VanillaQuantizationGrid",
+    "build_asymmetric_neuqi_quantization_grid",
     "build_asymmetric_awq_quantization_grid",
     "build_awq_quantization_grid",
+    "build_neuqi_quantization_grid",
     "build_symmetric_awq_quantization_grid",
     "build_asymmetric_flatquant_diag_quantization_grid",
     "build_flatquant_diag_quantization_grid",

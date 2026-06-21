@@ -2,7 +2,7 @@
 
 This repository contains post-training quantization baselines for studying:
 
-- quantization grids / transforms: Vanilla, AWQ, the FlatQuant
+- quantization grids / transforms: Vanilla, AWQ, NeUQI, the FlatQuant
   diagonal-scale ablation grid, and SpinQuant no-had rotation absorption are implemented
 - assignment methods: RTN, GPTQ, GPTAQ, GPTAQ+ResComp, fixed-grid FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
@@ -30,6 +30,7 @@ vanilla: symmetric and asymmetric
 awq:     symmetric and asymmetric
 flatquant_diag: symmetric and asymmetric per-channel scale/clipping grid
 spinquant: learned or random no-had R1/R2 rotation absorption, then symmetric/asymmetric grid
+neuqi: Hessian-diagonal weighted affine grid initialization with floating zero-points
 ```
 
 Assignment methods:
@@ -85,6 +86,13 @@ assignment method to the ordinary uniform weight grid. Use
 `--spinquant-rotations-pt` for a learned checkpoint containing `R1` and
 `model.layers.{i}.self_attn.R2`. `--spinquant-random-rotations` exists only for
 pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
+
+`neuqi` initializes an asymmetric uniform affine grid by minimizing the
+diagonal-Hessian weighted reconstruction loss from NeUQI. It uses `stats.diag_H`
+collected from calibration inputs, searches scale with the paper defaults
+`T=2048`, `T_c=64`, and stores floating-point zero-points. The zero-point
+solver follows the paper's transition-point search: Algorithm 3 on the Eq. 8
+approximation followed by Algorithm 4 on Eq. 7 in the local interval.
 
 ```python
 from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
@@ -379,6 +387,23 @@ uv run python run_quantization_baseline.py \
 For a one-layer smoke run without a learned checkpoint, replace the rotations
 path with `--spinquant-random-rotations --spinquant-random-seed 42` and add
 `--no-save --n-calib 1 --seqlen 128 --max-layers 1`.
+
+NeUQI + RTN:
+
+```bash
+uv run python run_quantization_baseline.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/baselines_llama31_8b \
+  --run-name llama31_8b_neuqi_asymmetric_rtn_w3g128_c4n128 \
+  --grid neuqi \
+  --scheme asymmetric \
+  --assignment rtn \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048
+```
 
 Minimal AWQ FlexRound smoke run using the generated asymmetric AWQ scales:
 

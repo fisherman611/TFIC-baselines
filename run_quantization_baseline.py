@@ -34,6 +34,7 @@ from grid_baselines import (
     apply_spinquant_no_had,
     build_awq_quantization_grid,
     build_flatquant_diag_quantization_grid,
+    build_neuqi_quantization_grid,
     build_spinquant_quantization_grid,
     build_vanilla_quantization_grid,
     load_spinquant_rotations,
@@ -178,6 +179,7 @@ def build_grid(
     name: str,
     weights: torch.Tensor,
     args,
+    stats,
     awq_scales: torch.Tensor | None,
     flatquant_diag_params: dict[str, torch.Tensor] | None,
 ):
@@ -208,6 +210,20 @@ def build_grid(
             group_size=args.group_size,
             scheme=args.scheme,
             weight_clip=flatquant_diag_params.get("weight_clip", 1.0),
+        )
+    if name == "neuqi":
+        if stats is None:
+            raise ValueError("NeUQI grid requires per-layer activation stats")
+        return build_neuqi_quantization_grid(
+            weights,
+            stats,
+            bits=args.bits,
+            group_size=args.group_size,
+            scheme=args.scheme,
+            scale_candidates=args.neuqi_scale_candidates,
+            coarse_candidates=args.neuqi_coarse_candidates,
+            row_chunk_size=args.neuqi_row_chunk_size,
+            candidate_chunk_size=args.neuqi_candidate_chunk_size,
         )
     if name == 'spinquant':
         return build_spinquant_quantization_grid(
@@ -260,7 +276,7 @@ def parse_args():
 
     parser.add_argument(
         '--grid',
-        choices=['vanilla', 'awq', 'flatquant_diag', 'spinquant'],
+        choices=['vanilla', 'awq', 'flatquant_diag', 'spinquant', 'neuqi'],
         required=True,
     )
     parser.add_argument("--assignment", choices=sorted(NEED_H), required=True)
@@ -305,6 +321,30 @@ def parse_args():
         type=int,
         default=None,
         help='Seed for --spinquant-random-rotations. Defaults to --seed.',
+    )
+    parser.add_argument(
+        "--neuqi-scale-candidates",
+        type=int,
+        default=2048,
+        help="Number of fine scale candidates T for NeUQI.",
+    )
+    parser.add_argument(
+        "--neuqi-coarse-candidates",
+        type=int,
+        default=64,
+        help="Number of coarse scale candidates T_c for NeUQI.",
+    )
+    parser.add_argument(
+        "--neuqi-candidate-chunk-size",
+        type=int,
+        default=16,
+        help="Scale candidates evaluated per chunk for NeUQI.",
+    )
+    parser.add_argument(
+        "--neuqi-row-chunk-size",
+        type=int,
+        default=16,
+        help="Rows processed per chunk while searching NeUQI parameters.",
     )
 
     parser.add_argument("--calib-dataset", choices=["c4", "wikitext2"], default="c4")
@@ -474,6 +514,7 @@ def main():
             args.grid,
             weights,
             args,
+            stats,
             layer_awq_scales,
             layer_flatquant_diag_params,
         )
