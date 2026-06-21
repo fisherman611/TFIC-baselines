@@ -4,6 +4,7 @@ import torch
 
 from eigenflip.statistics.trust_region import LayerStats
 from grid_baselines import build_awq_quantization_grid, build_vanilla_quantization_grid
+from grid_baselines import build_flatquant_diag_quantization_grid
 
 
 def reconstruction_error(weights: torch.Tensor, dequantized: torch.Tensor) -> dict[str, float]:
@@ -60,6 +61,10 @@ def awq_toy_scales() -> torch.Tensor:
 
 def awq_toy_inputs() -> tuple[torch.Tensor, torch.Tensor]:
     return assignment_toy_weights(), awq_toy_scales()
+
+
+def flatquant_toy_inputs() -> tuple[torch.Tensor, torch.Tensor, float]:
+    return assignment_toy_weights(), awq_toy_scales(), 0.85
 
 
 def toy_correlated_hessian() -> torch.Tensor:
@@ -131,4 +136,23 @@ def toy_awq_grids():
     return [
         toy_awq_grid("symmetric"),
         toy_awq_grid("asymmetric"),
+    ]
+
+
+def toy_flatquant_diag_grid(scheme: str, weight_clip: float = 1.0):
+    weights, scales, _clip = flatquant_toy_inputs()
+    return build_flatquant_diag_quantization_grid(
+        weights,
+        scales,
+        bits=2,
+        group_size=5,
+        scheme=scheme,
+        weight_clip=weight_clip,
+    )
+
+
+def toy_flatquant_diag_grids():
+    return [
+        toy_flatquant_diag_grid("symmetric"),
+        toy_flatquant_diag_grid("asymmetric"),
     ]

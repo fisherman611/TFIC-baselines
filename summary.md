@@ -238,6 +238,123 @@ IntegerQuantizedTensorState.from_awq(
 
 ---
 
+### FlatQuant Diagonal-Scale Quantization Grid
+
+Status: implemented in `grid_baselines/flatquant_quantization_grid.py`.
+
+The implemented `flatquant_diag` grid covers only the part of FlatQuant that
+fits this repository's fixed-grid assignment interface: the learned
+per-input-channel scaling vector `c` and optional learned weight clipping
+threshold `alpha_w`.
+
+Given per-input-channel FlatQuant scale `c`:
+
+```text
+W_scaled = W * c
+```
+
+The grid applies symmetric or asymmetric group-wise quantization to
+`W_scaled`, then folds the inverse scale back into the effective dequantization
+scale:
+
+```text
+s_eff = s_q / c
+W_hat = (q - z) * s_eff
+```
+
+Optional `weight_clip` represents the learned post-transform weight clipping
+ratio in `(0, 1]`. For symmetric grids it shrinks the absmax range; for
+asymmetric grids it shrinks the min-max range around its midpoint.
+
+Code:
+
+```python
+from grid_baselines import build_flatquant_diag_quantization_grid
+
+grid = build_flatquant_diag_quantization_grid(
+    W,
+    flatquant_scales,
+    bits=bits,
+    group_size=group_size,
+    scheme="asymmetric",
+    weight_clip=alpha_w,
+)
+q, W_hat = grid.round_to_nearest()
+```
+
+Runner usage:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid flatquant_diag `
+  --flatquant-params-pt <path-to-flatquant-params.pt> `
+  --scheme asymmetric `
+  --assignment rtn `
+  --bits 3 `
+  --group-size 128
+```
+
+The expected params file format is either:
+
+```python
+{
+    "model.layers.0.mlp.down_proj": scale_tensor,
+}
+```
+
+or:
+
+```python
+{
+    "model.layers.0.mlp.down_proj": {
+        "scales": scale_tensor,
+        "weight_clip": alpha_w,
+    },
+}
+```
+
+Scope note: `flatquant_diag` is not the full FlatQuant baseline. Full FlatQuant
+also learns non-diagonal Kronecker affine transformations and applies online
+activation/KV-cache transforms. Those are not representable as the independent
+per-coordinate grid expected by the current assignment methods and
+saved-HF-checkpoint runner. If a params file only contains affine matrices and
+no per-channel scale vector, the runner raises an explicit error instead of
+silently producing an invalid checkpoint.
+
+---
+
+### Full FlatQuant Implementation Plan
+
+Status: planned.
+
+To make the main `FlatQuant` grid baseline match the official implementation,
+the current fixed-grid runner needs a model-level integration rather than only a
+weight-grid builder.
+
+Planned steps:
+
+1. Add model wrappers for LLaMA/Qwen-like attention and MLP modules, following
+   the official structure: `ln_trans`, `up_gate_trans`, `down_trans`,
+   `kcache_trans`, `vcache_trans`, and `o_trans`.
+2. Implement Kronecker/SVD transform modules and load official
+   `flat_matrices.pth` keys. These transforms must be applied to activations in
+   forward and to weights during reparameterization.
+3. Add activation and KV-cache quantization/clipping support. Official
+   FlatQuant uses per-token activation quantization plus learnable activation
+   clipping, and separate K/V cache quantizers.
+4. Add a `flatquant_reparameterize` path that turns the calibrated model into a
+   transformed-weight model, fuses diagonal scales into LayerNorm where
+   applicable, and only then exposes transformed linear weights to assignment
+   methods.
+5. Add a FlatQuant-aware stats collector. GPTQ/GPTAQ/TFIC statistics must be
+   collected from the transformed activation stream, not from the original
+   `X`.
+6. Keep `flatquant_diag` as a separate ablation baseline so results do not
+   conflate diagonal scaling with full FlatQuant.
+
+---
+
 ## Assignment Methods
 
 Status: implemented in `assignment_methods/`.
@@ -662,6 +779,24 @@ python run_quantization_baseline.py `
   --flexround-steps 5000 `
   --flexround-lr 2e-4 `
   --run-name awq_asym_flexround_w3g128_c4n128
+```
+
+FlatQuant diagonal-scale + RTN:
+
+```powershell
+python run_quantization_baseline.py `
+  --model-path <hf-model-or-local-path> `
+  --grid flatquant_diag `
+  --flatquant-params-pt <path-to-flatquant-params.pt> `
+  --scheme asymmetric `
+  --assignment rtn `
+  --bits 3 `
+  --group-size 128 `
+  --calib-dataset c4 `
+  --n-calib 128 `
+  --seqlen 2048 `
+  --seed 42 `
+  --run-name flatquant_diag_asym_rtn_w3g128_c4n128
 ```
 
 Lightweight AWQ + FlexRound smoke run:

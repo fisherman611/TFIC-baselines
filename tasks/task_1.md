@@ -43,6 +43,15 @@ The assignment methods will be applied on top of the following quantization grid
 - [ ] **SpinQuant**
 - [ ] **NeUQI**
 
+Implemented support note:
+
+- [X] ~~**FlatQuant diagonal-scale fixed grid (`flatquant_diag`)**~~
+
+`flatquant_diag` is not the full FlatQuant baseline. It only covers the
+fixed-grid-compatible diagonal scale and weight clipping subset. Full
+FlatQuant still requires model forward/reparameterization support for the
+learned affine/Kronecker transforms.
+
 AWQ is the first priority.
 
 #### Backup grid baselines

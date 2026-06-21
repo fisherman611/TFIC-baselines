@@ -30,7 +30,11 @@ from assignment_methods import (
 )
 from eigenflip.quantization.awq_scales import scales_from_awq_run
 from eigenflip.statistics.collect_fast import collect_and_encode_awq_style
-from grid_baselines import build_awq_quantization_grid, build_vanilla_quantization_grid
+from grid_baselines import (
+    build_awq_quantization_grid,
+    build_flatquant_diag_quantization_grid,
+    build_vanilla_quantization_grid,
+)
 
 try:
     from calibration_utils import get_c4_calibration_data, get_wikitext2_calibration_data
@@ -112,7 +116,67 @@ def load_awq_scales(path: str | None) -> dict[str, torch.Tensor]:
     return {key: torch.as_tensor(value) for key, value in raw.items()}
 
 
-def build_grid(name: str, weights: torch.Tensor, args, awq_scales: torch.Tensor | None):
+def load_flatquant_diag_params(path: str | None) -> dict[str, dict[str, torch.Tensor]]:
+    if not path:
+        raise ValueError("--grid flatquant_diag requires --flatquant-params-pt")
+
+    raw = torch.load(path, map_location="cpu")
+    if isinstance(raw, dict) and "layers" in raw and isinstance(raw["layers"], dict):
+        raw = raw["layers"]
+    if not isinstance(raw, dict):
+        raise ValueError("--flatquant-params-pt must contain a dict")
+
+    scale_keys = (
+        "scales",
+        "scale",
+        "flatquant_scales",
+        "channel_scales",
+        "channel_scale",
+        "c",
+    )
+    clip_keys = ("weight_clip", "alpha_w", "clip", "clip_ratio")
+    affine_keys = ("p", "P", "p1", "p2", "P1", "P2", "u", "v", "sigma")
+    parsed: dict[str, dict[str, torch.Tensor]] = {}
+    for layer_name, value in raw.items():
+        if torch.is_tensor(value):
+            parsed[layer_name] = {"scales": torch.as_tensor(value)}
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(
+                "FlatQuant diag layer params must be a tensor scale vector or a dict, "
+                f"got {type(value)!r} for {layer_name!r}"
+            )
+
+        layer: dict[str, torch.Tensor] = {}
+        for key in scale_keys:
+            if key in value:
+                layer["scales"] = torch.as_tensor(value[key])
+                break
+        for key in clip_keys:
+            if key in value:
+                layer["weight_clip"] = torch.as_tensor(value[key])
+                break
+
+        if "scales" not in layer:
+            if any(key in value for key in affine_keys):
+                raise ValueError(
+                    "Full FlatQuant affine/Kronecker transforms are not supported "
+                    "by this fixed-grid runner because they require online "
+                    f"activation transforms. Use grid=flatquant_diag only with "
+                    f"per-channel scales; missing scale for {layer_name!r}."
+                )
+            raise ValueError(f"missing FlatQuant diag scale vector for {layer_name!r}")
+        parsed[layer_name] = layer
+    return parsed
+
+
+def build_grid(
+    name: str,
+    weights: torch.Tensor,
+    args,
+    awq_scales: torch.Tensor | None,
+    flatquant_diag_params: dict[str, torch.Tensor] | None,
+):
     if name == "vanilla":
         return build_vanilla_quantization_grid(
             weights,
@@ -129,6 +193,17 @@ def build_grid(name: str, weights: torch.Tensor, args, awq_scales: torch.Tensor 
             bits=args.bits,
             group_size=args.group_size,
             scheme=args.scheme,
+        )
+    if name == "flatquant_diag":
+        if flatquant_diag_params is None:
+            raise ValueError("FlatQuant diag grid requires per-layer scale params")
+        return build_flatquant_diag_quantization_grid(
+            weights,
+            flatquant_diag_params["scales"],
+            bits=args.bits,
+            group_size=args.group_size,
+            scheme=args.scheme,
+            weight_clip=flatquant_diag_params.get("weight_clip", 1.0),
         )
     raise ValueError(f"unknown grid baseline: {name}")
 
@@ -172,12 +247,21 @@ def parse_args():
         help="Run quantization without writing a checkpoint; intended for smoke tests.",
     )
 
-    parser.add_argument("--grid", choices=["vanilla", "awq"], required=True)
+    parser.add_argument("--grid", choices=["vanilla", "awq", "flatquant_diag"], required=True)
     parser.add_argument("--assignment", choices=sorted(NEED_H), required=True)
     parser.add_argument("--scheme", choices=["asymmetric", "symmetric"], default="asymmetric")
     parser.add_argument("--bits", type=int, default=3, choices=[2, 3, 4, 8])
     parser.add_argument("--group-size", type=int, default=128)
     parser.add_argument("--awq-scales-pt", default=None)
+    parser.add_argument(
+        "--flatquant-params-pt",
+        default=None,
+        help=(
+            "Path to per-layer FlatQuant diagonal-scale grid params. Expected formats: "
+            "{layer: scale_tensor} or {layer: {'scales': tensor, "
+            "'weight_clip': scalar}}."
+        ),
+    )
 
     parser.add_argument("--calib-dataset", choices=["c4", "wikitext2"], default="c4")
     parser.add_argument("--n-calib", type=int, default=128)
@@ -274,6 +358,11 @@ def main():
 
     calibration = load_calibration(tokenizer, args)
     awq_scales_by_layer = load_awq_scales(args.awq_scales_pt) if args.grid == "awq" else {}
+    flatquant_diag_by_layer = (
+        load_flatquant_diag_params(args.flatquant_params_pt)
+        if args.grid == "flatquant_diag"
+        else {}
+    )
     assignment = build_assignment(args.assignment, args)
 
     need_h = assignment_needs_h(args.assignment, args.k)
@@ -294,8 +383,19 @@ def main():
             layer_awq_scales = awq_scales_by_layer.get(layer_name)
             if layer_awq_scales is None:
                 raise KeyError(f"no AWQ scales for layer {layer_name!r}")
+        layer_flatquant_diag_params = None
+        if args.grid == "flatquant_diag":
+            layer_flatquant_diag_params = flatquant_diag_by_layer.get(layer_name)
+            if layer_flatquant_diag_params is None:
+                raise KeyError(f"no FlatQuant diag params for layer {layer_name!r}")
 
-        grid = build_grid(args.grid, weights, args, layer_awq_scales)
+        grid = build_grid(
+            args.grid,
+            weights,
+            args,
+            layer_awq_scales,
+            layer_flatquant_diag_params,
+        )
         if args.assignment == "rtn":
             corrected, _info = assignment.apply_to_grid(grid)
         else:

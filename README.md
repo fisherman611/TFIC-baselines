@@ -2,7 +2,8 @@
 
 This repository contains post-training quantization baselines for studying:
 
-- quantization grids / transforms: Vanilla and AWQ are implemented
+- quantization grids / transforms: Vanilla, AWQ, and the FlatQuant
+  diagonal-scale ablation grid are implemented
 - assignment methods: RTN, GPTQ, GPTAQ, GPTAQ+ResComp, fixed-grid FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
 
@@ -27,6 +28,7 @@ Grid baselines:
 ```text
 vanilla: symmetric and asymmetric
 awq:     symmetric and asymmetric
+flatquant_diag: symmetric and asymmetric per-channel scale/clipping grid
 ```
 
 Assignment methods:
@@ -65,6 +67,15 @@ reuses the paired GPTAQ statistics, and adds the `P2` correction from
 The default residual scale follows the reference implementation
 (`rescomp_alpha=0.25`), with 2-bit using the original GPTAQ-style update and
 3-bit or higher using ResComp's `allw` update.
+
+`flatquant_diag` is implemented as a fixed-grid-compatible ablation of
+FlatQuant: the learned pair-wise per-channel scale `c` and optional learned
+weight clipping threshold `alpha_w`. It consumes params produced elsewhere
+through `--flatquant-params-pt`. This is not the full FlatQuant baseline from
+the official repo. Full FlatQuant's non-diagonal Kronecker affine transforms
+require online activation/KV-cache transforms and model reparameterization, so
+they must be integrated at the model-forward level before assignment methods
+can be applied correctly.
 
 ```python
 from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
@@ -302,6 +313,41 @@ For a quick pipeline check, lower `--flexround-steps`; use 5000 for the paper's
 reconstruction-step budget. `--no-flexround-row-scale` disables the additional
 output-channel factor. The full runner exposes the same settings through
 `FLEXROUND_STEPS`, `FLEXROUND_LR`, and `FLEXROUND_LOG_DIVISOR_BOUND`.
+
+FlatQuant diagonal-scale grid + RTN:
+
+```bash
+uv run python run_quantization_baseline.py \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/baselines_llama31_8b \
+  --run-name llama31_8b_flatquant_diag_asymmetric_rtn_w3g128_c4n128 \
+  --grid flatquant_diag \
+  --flatquant-params-pt ./outputs/flatquant/llama31_8b_flatquant_params.pt \
+  --scheme asymmetric \
+  --assignment rtn \
+  --bits 3 \
+  --group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048
+```
+
+The FlatQuant diagonal-scale params file can map each linear layer name to a scale tensor:
+
+```python
+{"model.layers.0.mlp.down_proj": scale_tensor}
+```
+
+or to a dict with optional clipping:
+
+```python
+{
+    "model.layers.0.mlp.down_proj": {
+        "scales": scale_tensor,
+        "weight_clip": alpha_w,
+    }
+}
+```
 
 Minimal AWQ FlexRound smoke run using the generated asymmetric AWQ scales:
 

@@ -9,6 +9,7 @@ set -euo pipefail
 #   MODEL_PATH=/path/or/hf/id bash run_full_baselines.sh
 #   MODEL_PATH=meta-llama/Meta-Llama-3.1-8B AWQ_SCALES_PT=./awq_scales.pt bash run_full_baselines.sh
 #   AWQ_SCALES_PT_ASYMMETRIC=./awq_asym.pt AWQ_SCALES_PT_SYMMETRIC=./awq_sym.pt bash run_full_baselines.sh
+#   FLATQUANT_PARAMS_PT=./flatquant_diag_params.pt GRIDS="flatquant_diag" bash run_full_baselines.sh
 #
 # To run fewer cells:
 #
@@ -55,6 +56,9 @@ FLEXROUND_LOG_DIVISOR_BOUND=${FLEXROUND_LOG_DIVISOR_BOUND:-6.0}
 AWQ_SCALES_PT=${AWQ_SCALES_PT:-}
 AWQ_SCALES_PT_ASYMMETRIC=${AWQ_SCALES_PT_ASYMMETRIC:-}
 AWQ_SCALES_PT_SYMMETRIC=${AWQ_SCALES_PT_SYMMETRIC:-}
+FLATQUANT_PARAMS_PT=${FLATQUANT_PARAMS_PT:-}
+FLATQUANT_PARAMS_PT_ASYMMETRIC=${FLATQUANT_PARAMS_PT_ASYMMETRIC:-}
+FLATQUANT_PARAMS_PT_SYMMETRIC=${FLATQUANT_PARAMS_PT_SYMMETRIC:-}
 
 RUN_PPL=${RUN_PPL:-1}
 RUN_LM_EVAL=${RUN_LM_EVAL:-1}
@@ -146,6 +150,22 @@ for GRID in $GRIDS; do
           continue
         fi
         GRID_ARGS+=(--awq-scales-pt "$SCHEME_AWQ_SCALES_PT")
+      fi
+      if [[ "$GRID" == "flatquant_diag" ]]; then
+        SCHEME_FLATQUANT_PARAMS_PT="$FLATQUANT_PARAMS_PT"
+        if [[ "$SCHEME" == "asymmetric" && -n "$FLATQUANT_PARAMS_PT_ASYMMETRIC" ]]; then
+          SCHEME_FLATQUANT_PARAMS_PT="$FLATQUANT_PARAMS_PT_ASYMMETRIC"
+        fi
+        if [[ "$SCHEME" == "symmetric" && -n "$FLATQUANT_PARAMS_PT_SYMMETRIC" ]]; then
+          SCHEME_FLATQUANT_PARAMS_PT="$FLATQUANT_PARAMS_PT_SYMMETRIC"
+        fi
+        if [[ -z "$SCHEME_FLATQUANT_PARAMS_PT" ]]; then
+          echo
+          echo "!!! skipping grid=flatquant_diag scheme=$SCHEME because no FlatQuant diag params path is set"
+          echo "!!! set FLATQUANT_PARAMS_PT or FLATQUANT_PARAMS_PT_${SCHEME^^}"
+          continue
+        fi
+        GRID_ARGS+=(--flatquant-params-pt "$SCHEME_FLATQUANT_PARAMS_PT")
       fi
 
       echo
