@@ -40,6 +40,9 @@ class LayerStats:
     D: torch.Tensor = field(default=None, repr=False)      # [d] floored residual diag
     V: torch.Tensor = field(default=None, repr=False)      # [d, k+1]
     Sigma: Optional[torch.Tensor] = field(default=None, repr=False)  # dense, harness-only
+    # GPTAQ asymmetric-calibration statistic:
+    # E[(X_full_precision - X_quantized)^T X_quantized].
+    delta_cross: Optional[torch.Tensor] = field(default=None, repr=False)
     backend: str = "unknown"
 
     @property

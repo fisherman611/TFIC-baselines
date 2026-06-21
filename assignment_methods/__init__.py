@@ -1,6 +1,7 @@
 """Assignment-method baseline wrappers."""
 
 from .flexround import FlexRoundAssignment
+from .gptaq import GPTAQAssignment, stats_from_paired_inputs
 from .gptq import GPTQAssignment
 from .rtn import RTNAssignment
 from .state_adapter import state_from_grid, state_from_vanilla_grid
@@ -9,10 +10,12 @@ from .tfic import TFICAssignment
 
 __all__ = [
     "FlexRoundAssignment",
+    "GPTAQAssignment",
     "GPTQAssignment",
     "RTNAssignment",
     "TFICAssignment",
     "identity_layer_stats",
     "state_from_grid",
     "state_from_vanilla_grid",
+    "stats_from_paired_inputs",
 ]

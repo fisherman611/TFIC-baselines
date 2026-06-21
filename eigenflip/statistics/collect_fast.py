@@ -129,6 +129,70 @@ class _Acc:
         self.s1 = self.s2 = self.G = None
 
 
+class _PairedAcc(_Acc):
+    def __init__(self, d, device):
+        super().__init__(d, need_H=True, device=device)
+        self.delta_cross = torch.zeros(d, d, dtype=torch.float64, device=device)
+
+    @torch.no_grad()
+    def add_paired(self, quantized, reference):
+        xq = quantized.reshape(-1, quantized.shape[-1]).float()
+        xr = reference.reshape(-1, reference.shape[-1]).float()
+        if xq.shape != xr.shape:
+            raise ValueError(
+                "paired GPTAQ activations must have identical flattened shapes, "
+                f"got {tuple(xq.shape)} and {tuple(xr.shape)}"
+            )
+        if xq.device != self.s1.device:
+            xq = xq.to(self.s1.device, non_blocking=True)
+        if xr.device != self.s1.device:
+            xr = xr.to(self.s1.device, non_blocking=True)
+        self.s1 += xq.sum(0).double()
+        self.s2 += (xq * xq).sum(0).double()
+        self.n += xq.shape[0]
+        self.G += (xq.t() @ xq).double()
+        self.delta_cross += ((xr - xq).t() @ xq).double()
+        del xq, xr
+
+    @torch.no_grad()
+    def to_stats(self, k, eps, keep_sigma, eig_device):
+        n = max(1, self.n)
+        mu = self.s1 / n
+        diag_H = self.s2 / n
+        Sigma = self.G / n - torch.outer(mu, mu)
+        Sigma = 0.5 * (Sigma + Sigma.t())
+        diag_Sigma = torch.diagonal(Sigma).clone()
+        U_k = Lam_k = None
+        if k > 0:
+            S = Sigma if eig_device is None else Sigma.to(eig_device)
+            evals, evecs = torch.linalg.eigh(S)
+            topk = torch.argsort(evals, descending=True)[:k]
+            Lam_k = evals[topk].clamp_min(0).to(Sigma.device)
+            U_k = evecs[:, topk].to(Sigma.device)
+            del evals, evecs
+            if S is not Sigma:
+                del S
+        st = LayerStats(
+            d=self.d,
+            mu_hat=mu,
+            diag_H=diag_H,
+            diag_Sigma=diag_Sigma,
+            U_k=U_k,
+            Lam_k=Lam_k,
+            eps=eps,
+            Sigma=Sigma if keep_sigma else None,
+            delta_cross=self.delta_cross / n,
+            backend="paired_gram",
+        ).build()
+        if not keep_sigma:
+            del Sigma
+        return st
+
+    def free(self):
+        super().free()
+        self.delta_cross = None
+
+
 # ---------------------------------------------------------------------------
 # AWQ-style batched driver.
 # ---------------------------------------------------------------------------
@@ -144,6 +208,8 @@ def collect_and_encode_awq_style(
     max_length=2048,
     stats_device="layer",
     max_layers=None,
+    paired_full_precision=False,
+    paired_cache_dtype=torch.float16,
 ):
     """
     calib: list of pre-tokenized [1,L] tensors OR text strings.
@@ -165,14 +231,49 @@ def collect_and_encode_awq_style(
     # d x d Gram is what costs RAM); with mean-only, batching just forces the
     # model to be re-run from scratch for every batch (the slow bug). So when
     # need_H is False we override the batch size to cover all layers.
+    if paired_full_precision:
+        need_H = True
+        keep_sigma = True
+        layer_batch_size = 1
     if not need_H:
         layer_batch_size = n_layers
 
     n_batches = (n_layers + layer_batch_size - 1) // layer_batch_size
     print(f"  {n_layers} layers, {n_batches} batch(es) of {layer_batch_size}, "
           f"need_H={need_H}"
-          + ("  [mean-only: single pass]" if not need_H else ""))
+          + ("  [mean-only: single pass]" if not need_H else "")
+          + ("  [paired GPTAQ]" if paired_full_precision else ""))
     print(f"  input_device={input_device} stats_device={stats_device}")
+
+    modules_by_name = dict(layers)
+    fp_weight_cache = {}
+    quant_weight_cache = {}
+
+    def restore_cached_weights(cache):
+        for lname, cached_weight in cache.items():
+            module = modules_by_name[lname]
+            module.weight.data.copy_(
+                cached_weight.to(
+                    device=module.weight.device,
+                    dtype=module.weight.dtype,
+                    non_blocking=True,
+                )
+            )
+
+    def run_sample(sample):
+        if torch.is_tensor(sample):
+            ids = sample.to(input_device, non_blocking=True)
+            if ids.dim() == 1:
+                ids = ids.unsqueeze(0)
+            model(input_ids=ids, use_cache=False)
+            del ids
+        else:
+            enc = tokenizer(sample, return_tensors="pt",
+                            truncation=True, max_length=max_length)
+            enc = {kk: vv.to(input_device, non_blocking=True)
+                   for kk, vv in enc.items()}
+            model(**enc, use_cache=False)
+            del enc
 
     for bi in range(n_batches):
         s = bi * layer_batch_size
@@ -182,49 +283,97 @@ def collect_and_encode_awq_style(
 
         # one accumulator per layer in batch
         accs = {
-            n: _Acc(
-                m.weight.shape[1],
-                need_H,
-                _resolve_stats_device(m, stats_device, input_device),
+            n: (
+                _PairedAcc(
+                    m.weight.shape[1],
+                    _resolve_stats_device(m, stats_device, input_device),
+                )
+                if paired_full_precision
+                else _Acc(
+                    m.weight.shape[1],
+                    need_H,
+                    _resolve_stats_device(m, stats_device, input_device),
+                )
             )
             for n, m in batch
         }
 
-        def mk_hook(nm):
-            def hook(_m, inp, _o):
-                x = inp[0] if isinstance(inp, tuple) else inp
-                accs[nm].add(x)
-            return hook
+        if paired_full_precision:
+            fp_inputs = {n: [] for n, _m in batch}
+            fp_samples = []
 
-        handles = [m.register_forward_hook(mk_hook(n)) for n, m in batch]
+            def mk_fp_hook(nm):
+                def hook(_m, inp, _o):
+                    x = inp[0] if isinstance(inp, tuple) else inp
+                    fp_inputs[nm].append(
+                        x.detach().to("cpu", dtype=paired_cache_dtype)
+                    )
+                return hook
 
-        # ONE calibration pass for the whole batch (AWQ-style)
-        for sample in tqdm(calib, desc="  calib", leave=False):
-            try:
-                if torch.is_tensor(sample):
-                    ids = sample.to(input_device, non_blocking=True)
-                    if ids.dim() == 1:
-                        ids = ids.unsqueeze(0)
-                    model(input_ids=ids, use_cache=False)
-                    del ids
-                else:
-                    enc = tokenizer(sample, return_tensors="pt",
-                                    truncation=True, max_length=max_length)
-                    enc = {kk: vv.to(input_device, non_blocking=True)
-                           for kk, vv in enc.items()}
-                    model(**enc, use_cache=False)
-                    del enc
-            except Exception:
-                continue
+            restore_cached_weights(fp_weight_cache)
+            handles = [m.register_forward_hook(mk_fp_hook(n)) for n, m in batch]
+            for sample in tqdm(calib, desc="  calib-fp", leave=False):
+                lengths = {n: len(values) for n, values in fp_inputs.items()}
+                try:
+                    run_sample(sample)
+                    fp_samples.append(sample)
+                except Exception:
+                    for n, length in lengths.items():
+                        del fp_inputs[n][length:]
+                    continue
+            for h in handles:
+                h.remove()
+            restore_cached_weights(quant_weight_cache)
 
-        for h in handles:
-            h.remove()
+            cursor = {"idx": 0}
+
+            def mk_quant_hook(nm):
+                def hook(_m, inp, _o):
+                    x = inp[0] if isinstance(inp, tuple) else inp
+                    accs[nm].add_paired(x, fp_inputs[nm][cursor["idx"]])
+                return hook
+
+            handles = [m.register_forward_hook(mk_quant_hook(n)) for n, m in batch]
+            for idx, sample in enumerate(
+                tqdm(fp_samples, desc="  calib-quant", leave=False)
+            ):
+                cursor["idx"] = idx
+                try:
+                    run_sample(sample)
+                except Exception:
+                    continue
+            for h in handles:
+                h.remove()
+            fp_inputs.clear()
+            fp_samples.clear()
+        else:
+            def mk_hook(nm):
+                def hook(_m, inp, _o):
+                    x = inp[0] if isinstance(inp, tuple) else inp
+                    accs[nm].add(x)
+                return hook
+
+            handles = [m.register_forward_hook(mk_hook(n)) for n, m in batch]
+
+            # ONE calibration pass for the whole batch (AWQ-style)
+            for sample in tqdm(calib, desc="  calib", leave=False):
+                try:
+                    run_sample(sample)
+                except Exception:
+                    continue
+
+            for h in handles:
+                h.remove()
 
         # encode each layer in the batch (THIS is the quantize step)
         from tqdm import tqdm as _tq
         for n, m in _tq(batch, desc="  quantize", leave=False):
             st = accs[n].to_stats(k, eps, keep_sigma, eig_device)
+            if paired_full_precision:
+                fp_weight_cache[n] = m.weight.detach().to("cpu").clone()
             callback(n, m, st)
+            if paired_full_precision:
+                quant_weight_cache[n] = m.weight.detach().to("cpu").clone()
             st.free_sigma()
             accs[n].free()
             del st

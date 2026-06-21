@@ -7,7 +7,7 @@ set -euo pipefail
 MODEL_PATH=${MODEL_PATH:-meta-llama/Meta-Llama-3.1-8B}
 AWQ_SCALES_PT=${AWQ_SCALES_PT:-./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt}
 OUTPUT_DIR=${OUTPUT_DIR:-./quantized_models/assignment_smokes}
-METHODS=${METHODS:-"rtn gptq flexround tfic"}
+METHODS=${METHODS:-"rtn gptq gptaq flexround tfic"}
 
 if [[ ! -f "$AWQ_SCALES_PT" ]]; then
   echo "missing AWQ scales: $AWQ_SCALES_PT" >&2

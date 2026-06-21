@@ -242,8 +242,8 @@ IntegerQuantizedTensorState.from_awq(
 
 Status: implemented in `assignment_methods/`.
 
-These modules expose RTN, GPTQ, FlexRound, and TFIC through a common fixed-grid
-assignment interface.
+These modules expose RTN, GPTQ, GPTAQ, FlexRound, and TFIC through a common
+fixed-grid assignment interface.
 
 ### RTN
 
@@ -282,6 +282,44 @@ from assignment_methods import GPTQAssignment
 
 W_hat, info = GPTQAssignment().apply_to_grid(grid, stats)
 ```
+
+### GPTAQ
+
+Status: implemented in `assignment_methods/gptaq.py` and wired into
+`run_quantization_baseline.py`.
+
+GPTAQ extends GPTQ with paired asymmetric calibration statistics:
+
+```text
+H = E[X_quant^T X_quant]
+dXXT = E[(X_fp - X_quant)^T X_quant]
+P = alpha * triu(dXXT U^T, diagonal=1) U
+```
+
+Here, `U` is the upper Cholesky factor of the damped inverse Hessian. The
+assignment performs GPTQ's lazy-block update plus the correction involving
+`P`, while keeping the selected Vanilla/AWQ scale and zero-point fixed.
+
+```python
+from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
+
+stats = stats_from_paired_inputs(x_quantized, x_full_precision)
+W_hat, info = GPTAQAssignment(
+    damp=0.01,
+    block_size=128,
+    alpha=0.25,
+).apply_to_grid(grid, stats)
+```
+
+When `X_fp == X_quant`, `dXXT = 0`, so GPTAQ reduces exactly to GPTQ. It has no
+RTN fallback and returns the final lazy-block assignments.
+
+The whole-model collector now supports the paired FP/quantized activation
+stream required by GPTAQ. For GPTAQ runs it forces sequential one-layer
+batches, temporarily restores previous layers to their full-precision weights
+to collect `X_fp`, restores the quantized path to collect `X_quant`, and stores
+`delta_cross`. Missing `delta_cross` still raises an error instead of silently
+running GPTQ under the GPTAQ label.
 
 ### FlexRound
 

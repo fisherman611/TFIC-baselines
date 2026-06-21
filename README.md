@@ -3,7 +3,7 @@
 This repository contains post-training quantization baselines for studying:
 
 - quantization grids / transforms: Vanilla and AWQ are implemented
-- assignment methods: RTN, GPTQ, fixed-grid FlexRound, and TFIC are implemented
+- assignment methods: RTN, GPTQ, GPTAQ core, fixed-grid FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
 
 The current modular pipeline is:
@@ -34,6 +34,7 @@ Assignment methods:
 ```text
 rtn
 gptq
+gptaq
 flexround
 tfic
 ```
@@ -46,6 +47,30 @@ factor), and minimizes the calibration reconstruction surrogate
 the final optimization step are returned directly. The learned divisors are
 not stored in the checkpoint; inference still uses ordinary integer codes and
 the original Vanilla/AWQ grid.
+
+`gptaq` is implemented in `assignment_methods/gptaq.py` as a fixed-grid port of
+the official GPTAQ lazy block update. The whole-model runner collects paired
+full-precision and quantized-path layer inputs to form
+`dXXT = E[(X_fp - X_quant)^T X_quant]`, then applies GPTAQ on the selected
+Vanilla or AWQ grid. The paired collector forces sequential one-layer batches
+for GPTAQ so later layers see the quantized path created by earlier layers.
+
+```python
+from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
+
+stats = stats_from_paired_inputs(x_quantized, x_full_precision)
+weights, info = GPTAQAssignment(
+    damp=0.01,
+    block_size=128,
+    alpha=0.25,
+).apply_to_grid(grid, stats)
+```
+
+Assignment-level smoke test:
+
+```bash
+python -m pytest tests/test_gptaq_assignment.py -q
+```
 
 Default experiment setup:
 
@@ -111,7 +136,7 @@ RUN_WANDB=0 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0
 Run all implemented assignment methods on the Vanilla grid:
 
 ```bash
-GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
+GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -162,7 +187,7 @@ Run AWQ asymmetric and symmetric:
 ```bash
 AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
 AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
-GRIDS="awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
+GRIDS="awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -171,7 +196,7 @@ Run both Vanilla and AWQ:
 ```bash
 AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
 AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
-GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
+GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -204,7 +229,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 \
 MODEL_DEVICE_MAP=balanced \
 INPUT_DEVICE=auto \
 STATS_DEVICE=layer \
-GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
+GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq flexround tfic" \
 uv run bash run_full_baselines.sh
 ```
 
@@ -234,7 +259,7 @@ Outputs are written to:
 To save disk after each cell is evaluated:
 
 ```bash
-DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq flexround tfic" \
+DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq flexround tfic" \
   uv run bash run_full_baselines.sh
 ```
 
@@ -303,7 +328,7 @@ Run smoke checks for every implemented assignment method:
 bash run_assignment_smokes.sh
 ```
 
-The script runs `rtn`, `gptq`, `flexround`, and `tfic` against the existing
+The script runs `rtn`, `gptq`, `gptaq`, `flexround`, and `tfic` against the existing
 asymmetric AWQ scale file. Each cell uses one calibration sample and quantizes
 only the first linear layer via `--max-layers 1`. It also passes `--no-save`,
 so the four smoke cells do not write four full LLaMA checkpoints. The script

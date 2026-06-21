@@ -22,6 +22,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from assignment_methods import (
     FlexRoundAssignment,
+    GPTAQAssignment,
     GPTQAssignment,
     RTNAssignment,
     TFICAssignment,
@@ -39,10 +40,11 @@ except ImportError:
 NEED_H = {
     "flexround": True,
     "rtn": False,
+    "gptaq": True,
     "gptq": True,
     "tfic": True,
 }
-KEEP_SIGMA = {"gptq", "tfic"}
+KEEP_SIGMA = {"gptaq", "gptq", "tfic"}
 
 
 def assignment_needs_h(name: str, k: int) -> bool:
@@ -58,6 +60,13 @@ def build_assignment(name: str, args):
         return RTNAssignment()
     if name == "gptq":
         return GPTQAssignment(damp=args.gptq_damp, order=args.gptq_order)
+    if name == "gptaq":
+        return GPTAQAssignment(
+            damp=args.gptaq_damp,
+            block_size=args.gptaq_block_size,
+            alpha=args.gptaq_alpha,
+            act_order=args.gptaq_act_order,
+        )
     if name == "flexround":
         return FlexRoundAssignment(
             steps=args.flexround_steps,
@@ -193,6 +202,17 @@ def parse_args():
     parser.add_argument("--gptq-damp", type=float, default=0.01)
     parser.add_argument("--gptq-order", choices=["diag", "natural"], default="diag")
 
+    parser.add_argument("--gptaq-damp", type=float, default=0.01)
+    parser.add_argument("--gptaq-block-size", type=int, default=128)
+    parser.add_argument("--gptaq-alpha", type=float, default=0.25)
+    parser.add_argument("--gptaq-act-order", action="store_true")
+    parser.add_argument(
+        "--gptaq-cache-dtype",
+        choices=["float16", "bfloat16", "float32"],
+        default="float16",
+        help="CPU dtype for temporary full-precision activation cache.",
+    )
+
     parser.add_argument("--flexround-steps", type=int, default=5000)
     parser.add_argument("--flexround-lr", type=float, default=2e-4)
     parser.add_argument("--flexround-log-divisor-bound", type=float, default=6.0)
@@ -249,6 +269,11 @@ def main():
     # This avoids materializing per-layer d x d Gram matrices and provides a
     # practical one-pass smoke path. Full benchmark runs should keep k > 0.
     keep_sigma = args.assignment in KEEP_SIGMA
+    gptaq_cache_dtype = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+    }[args.gptaq_cache_dtype]
 
     def callback(layer_name, module, stats):
         weights = module.weight.data
@@ -300,6 +325,8 @@ def main():
         max_length=args.seqlen,
         stats_device=args.stats_device,
         max_layers=args.max_layers,
+        paired_full_precision=args.assignment == "gptaq",
+        paired_cache_dtype=gptaq_cache_dtype,
     )
 
     if args.no_save:

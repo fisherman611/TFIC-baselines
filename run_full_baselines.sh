@@ -46,7 +46,7 @@ STATS_DEVICE=${STATS_DEVICE:-layer}
 
 GRIDS=${GRIDS:-"vanilla awq"}
 SCHEMES=${SCHEMES:-"asymmetric symmetric"}
-ASSIGNMENTS=${ASSIGNMENTS:-"rtn gptq flexround tfic"}
+ASSIGNMENTS=${ASSIGNMENTS:-"rtn gptq gptaq flexround tfic"}
 
 FLEXROUND_STEPS=${FLEXROUND_STEPS:-5000}
 FLEXROUND_LR=${FLEXROUND_LR:-2e-4}
@@ -102,6 +102,10 @@ for GRID in $GRIDS; do
           ;;
         gptq)
           LBS=${LBS_GPTQ:-4}
+          EXTRA_ARGS=(--eig-on-cpu)
+          ;;
+        gptaq)
+          LBS=${LBS_GPTAQ:-1}
           EXTRA_ARGS=(--eig-on-cpu)
           ;;
         flexround)
