@@ -456,6 +456,22 @@ GRIDS="vanilla neuqi" SCHEMES="asymmetric" bash run_assignment_smokes.sh
 METHODS="rtn flexround" bash run_assignment_smokes.sh
 ```
 
+Save full checkpoints from the same script:
+
+```bash
+RUN_MODE=checkpoint \
+GRIDS="vanilla awq neuqi" \
+SCHEMES="asymmetric symmetric" \
+METHODS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
+bash run_assignment_smokes.sh
+```
+
+In checkpoint mode the script writes to
+`./quantized_models/baselines_llama31_8b/`, uses full layers, defaults to
+`n_calib=128` and `seqlen=2048`, and auto-generates missing AWQ scale files.
+FlatQuant diagonal and learned SpinQuant checkpoints still need their external
+artifact paths.
+
 Override model or artifact paths when necessary:
 
 ```bash
