@@ -30,7 +30,7 @@ vanilla: symmetric and asymmetric
 awq:     symmetric and asymmetric
 flatquant_diag: symmetric and asymmetric per-channel scale/clipping grid
 spinquant: learned or random no-had R1/R2 rotation absorption, then symmetric/asymmetric grid
-neuqi: Hessian-diagonal weighted affine grid initialization with floating zero-points
+neuqi: Hessian-diagonal weighted grid initialization, symmetric and asymmetric
 ```
 
 Assignment methods:
@@ -87,12 +87,14 @@ assignment method to the ordinary uniform weight grid. Use
 `model.layers.{i}.self_attn.R2`. `--spinquant-random-rotations` exists only for
 pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
 
-`neuqi` initializes an asymmetric uniform affine grid by minimizing the
-diagonal-Hessian weighted reconstruction loss from NeUQI. It uses `stats.diag_H`
-collected from calibration inputs, searches scale with the paper defaults
-`T=2048`, `T_c=64`, and stores floating-point zero-points. The zero-point
-solver follows the paper's transition-point search: Algorithm 3 on the Eq. 8
-approximation followed by Algorithm 4 on Eq. 7 in the local interval.
+`neuqi` initializes a uniform grid by minimizing the diagonal-Hessian weighted
+reconstruction loss from NeUQI. It uses `stats.diag_H` collected from
+calibration inputs and searches scale with the paper defaults `T=2048`,
+`T_c=64`. The asymmetric variant stores floating-point zero-points using the
+paper's transition-point search: Algorithm 3 on the Eq. 8 approximation
+followed by Algorithm 4 on Eq. 7 in the local interval. The symmetric variant
+keeps zero-point fixed at 0 and searches the weighted scale/clipping factor on
+signed integer codes.
 
 ```python
 from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
@@ -452,7 +454,7 @@ assignment only.
 Run selected grids or methods only:
 
 ```bash
-GRIDS="vanilla neuqi" SCHEMES="asymmetric" bash run_assignment_smokes.sh
+GRIDS="vanilla neuqi" SCHEMES="asymmetric symmetric" bash run_assignment_smokes.sh
 METHODS="rtn flexround" bash run_assignment_smokes.sh
 ```
 

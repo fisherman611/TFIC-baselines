@@ -149,13 +149,6 @@ SKIPS=0
 
 for GRID in $GRIDS; do
   for SCHEME in $SCHEMES; do
-    if [[ "$GRID" == "neuqi" && "$SCHEME" != "asymmetric" ]]; then
-      echo
-      echo "!!! skipping grid=neuqi scheme=$SCHEME because NeUQI is asymmetric only"
-      SKIPS=$((SKIPS + 1))
-      continue
-    fi
-
     GRID_ARGS=(--grid "$GRID")
     if [[ "$GRID" == "awq" ]]; then
       SCHEME_AWQ_SCALES_PT="$AWQ_SCALES_PT"

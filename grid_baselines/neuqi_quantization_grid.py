@@ -8,7 +8,9 @@ For each row/group vector it minimizes the diagonal-Hessian approximation
 over the scale ``s`` and a floating-point zero-point ``z``.  This module keeps
 the repository's fixed-grid contract: it returns a grid with learned
 ``scale``/``zero_point`` tensors, then assignment methods choose integer codes
-on top of that grid.
+on top of that grid.  The asymmetric variant uses NeUQI's floating zero-point
+solver.  The symmetric variant keeps zero-point fixed at 0 and searches the
+diagonal-Hessian weighted scale/clipping factor on the signed grid.
 """
 
 from __future__ import annotations
@@ -293,6 +295,38 @@ def _evaluate_scale_factors(
 
 
 @torch.no_grad()
+def _evaluate_symmetric_scale_factors(
+    grouped: torch.Tensor,
+    hessian_diag: torch.Tensor,
+    scale_upper: torch.Tensor,
+    factors: torch.Tensor,
+    qmin: int,
+    qmax: int,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Evaluate scale factors for symmetric signed-code NeUQI."""
+
+    if factors.dim() == 1:
+        scale_group = scale_upper * factors.reshape(1, 1, -1)
+    else:
+        scale_group = scale_upper * factors
+    scale_group = scale_group.clamp_min(eps)
+
+    weights = grouped.unsqueeze(2)
+    codes = torch.round(weights / scale_group.unsqueeze(-1)).clamp(qmin, qmax)
+    reconstructed = codes * scale_group.unsqueeze(-1)
+    h = hessian_diag.unsqueeze(0).unsqueeze(2).to(
+        device=grouped.device,
+        dtype=reconstructed.dtype,
+    )
+    weighted_loss = (h * (reconstructed - weights).square()).sum(dim=-1)
+    best = weighted_loss.argmin(dim=-1, keepdim=True)
+    best_scale = scale_group.gather(-1, best)
+    best_loss = weighted_loss.gather(-1, best)
+    return best_scale, best_loss, best.squeeze(-1)
+
+
+@torch.no_grad()
 def _search_neuqi_params(
     grouped: torch.Tensor,
     hessian_diag: torch.Tensor,
@@ -389,6 +423,99 @@ def _search_neuqi_params(
 
 
 @torch.no_grad()
+def _search_symmetric_neuqi_params(
+    grouped: torch.Tensor,
+    hessian_diag: torch.Tensor,
+    qmin: int,
+    qmax: int,
+    *,
+    scale_candidates: int,
+    coarse_candidates: int,
+    row_chunk_size: int,
+    candidate_chunk_size: int,
+    eps: float,
+) -> torch.Tensor:
+    rows, n_groups, _group_size = grouped.shape
+    scale_group = torch.empty(rows, n_groups, 1, device=grouped.device, dtype=torch.float32)
+
+    coarse_candidates = min(coarse_candidates, scale_candidates)
+    fine_width = max(1, scale_candidates // coarse_candidates)
+    coarse_indices = torch.arange(
+        1,
+        coarse_candidates + 1,
+        device=grouped.device,
+        dtype=torch.long,
+    )
+    coarse_factors = _candidate_factors(coarse_indices, coarse_candidates).to(grouped.device)
+
+    hessian_grouped = hessian_diag.reshape(n_groups, -1).to(
+        device=grouped.device,
+        dtype=torch.float32,
+    )
+
+    for start in range(0, rows, row_chunk_size):
+        end = min(start + row_chunk_size, rows)
+        chunk = grouped[start:end].to(torch.float32)
+        scale_upper = (chunk.abs().amax(dim=-1, keepdim=True) / qmax).clamp_min(eps)
+
+        best_coarse_loss = None
+        coarse_best = None
+        for candidate_start in range(0, coarse_candidates, candidate_chunk_size):
+            candidate_end = min(candidate_start + candidate_chunk_size, coarse_candidates)
+            _scale, loss, index = _evaluate_symmetric_scale_factors(
+                chunk,
+                hessian_grouped,
+                scale_upper,
+                coarse_factors[candidate_start:candidate_end],
+                qmin,
+                qmax,
+                eps,
+            )
+            index = index + candidate_start
+            if best_coarse_loss is None:
+                best_coarse_loss = loss
+                coarse_best = index
+                continue
+            improved = loss < best_coarse_loss
+            best_coarse_loss = torch.where(improved, loss, best_coarse_loss)
+            coarse_best = torch.where(improved.squeeze(-1), index, coarse_best)
+
+        center = ((coarse_best + 1) * fine_width).clamp(1, scale_candidates)
+        half = max(1, fine_width // 2)
+        offsets = torch.arange(
+            -half,
+            half + 1,
+            device=grouped.device,
+            dtype=torch.long,
+        )
+        fine_indices = (center.unsqueeze(-1) + offsets).clamp(1, scale_candidates)
+        fine_factors = fine_indices.to(torch.float32) / float(scale_candidates)
+
+        best_scale = best_loss = None
+        fine_candidates = fine_factors.shape[-1]
+        for candidate_start in range(0, fine_candidates, candidate_chunk_size):
+            candidate_end = min(candidate_start + candidate_chunk_size, fine_candidates)
+            scale, loss, _index = _evaluate_symmetric_scale_factors(
+                chunk,
+                hessian_grouped,
+                scale_upper,
+                fine_factors[..., candidate_start:candidate_end],
+                qmin,
+                qmax,
+                eps,
+            )
+            if best_loss is None:
+                best_scale, best_loss = scale, loss
+                continue
+            improved = loss < best_loss
+            best_scale = torch.where(improved, scale, best_scale)
+            best_loss = torch.where(improved, loss, best_loss)
+        scale_group[start:end] = best_scale
+
+    return scale_group
+
+
+@torch.no_grad()
 def build_neuqi_quantization_grid(
     weights: torch.Tensor,
     stats: LayerStats,
@@ -402,10 +529,12 @@ def build_neuqi_quantization_grid(
     candidate_chunk_size: int = 16,
     eps: float = 1e-8,
 ) -> NeUQIQuantizationGrid:
-    """Build a NeUQI-initialized affine grid for ``weights``.
+    """Build a NeUQI-initialized grid for ``weights``.
 
-    NeUQI is an asymmetric affine uniform quantizer.  The zero-point is
-    intentionally floating-point, matching the paper's relaxed formulation.
+    ``scheme="asymmetric"`` uses NeUQI's affine uniform quantizer with a
+    floating-point zero-point, matching the paper's relaxed formulation.
+    ``scheme="symmetric"`` keeps zero-point fixed at 0 and searches the
+    weighted scale/clipping factor on signed integer codes.
     """
 
     if weights.dim() != 2:
@@ -414,8 +543,10 @@ def build_neuqi_quantization_grid(
         raise ValueError(f"bits must be positive, got {bits}")
     if group_size <= 0:
         raise ValueError(f"group_size must be positive, got {group_size}")
-    if scheme != "asymmetric":
-        raise ValueError("NeUQI currently supports only asymmetric affine quantization")
+    if scheme not in {"asymmetric", "symmetric"}:
+        raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
+    if scheme == "symmetric" and bits < 2:
+        raise ValueError("symmetric NeUQI quantization requires bits >= 2")
     if scale_candidates <= 0:
         raise ValueError("scale_candidates must be positive")
     if coarse_candidates <= 0:
@@ -444,20 +575,35 @@ def build_neuqi_quantization_grid(
     )
 
     grouped = padded_weights.reshape(rows, n_groups, group_size)
-    qmin = 0
-    qmax = 2**bits - 1
-
-    scale_group, zero_group = _search_neuqi_params(
-        grouped,
-        diag_h,
-        valid_mask,
-        qmax,
-        scale_candidates=scale_candidates,
-        coarse_candidates=coarse_candidates,
-        row_chunk_size=row_chunk_size,
-        candidate_chunk_size=candidate_chunk_size,
-        eps=eps,
-    )
+    if scheme == "symmetric":
+        qmin = -(2 ** (bits - 1))
+        qmax = 2 ** (bits - 1) - 1
+        scale_group = _search_symmetric_neuqi_params(
+            grouped,
+            diag_h,
+            qmin,
+            qmax,
+            scale_candidates=scale_candidates,
+            coarse_candidates=coarse_candidates,
+            row_chunk_size=row_chunk_size,
+            candidate_chunk_size=candidate_chunk_size,
+            eps=eps,
+        )
+        zero_group = torch.zeros_like(scale_group)
+    else:
+        qmin = 0
+        qmax = 2**bits - 1
+        scale_group, zero_group = _search_neuqi_params(
+            grouped,
+            diag_h,
+            valid_mask,
+            qmax,
+            scale_candidates=scale_candidates,
+            coarse_candidates=coarse_candidates,
+            row_chunk_size=row_chunk_size,
+            candidate_chunk_size=candidate_chunk_size,
+            eps=eps,
+        )
 
     return NeUQIQuantizationGrid(
         float_weights=padded_weights,
@@ -496,6 +642,33 @@ def build_asymmetric_neuqi_quantization_grid(
         bits,
         group_size,
         scheme="asymmetric",
+        scale_candidates=scale_candidates,
+        coarse_candidates=coarse_candidates,
+        row_chunk_size=row_chunk_size,
+        candidate_chunk_size=candidate_chunk_size,
+        eps=eps,
+    )
+
+
+@torch.no_grad()
+def build_symmetric_neuqi_quantization_grid(
+    weights: torch.Tensor,
+    stats: LayerStats,
+    bits: int,
+    group_size: int,
+    *,
+    scale_candidates: int = 2048,
+    coarse_candidates: int = 64,
+    row_chunk_size: int = 16,
+    candidate_chunk_size: int = 16,
+    eps: float = 1e-8,
+) -> NeUQIQuantizationGrid:
+    return build_neuqi_quantization_grid(
+        weights,
+        stats,
+        bits,
+        group_size,
+        scheme="symmetric",
         scale_candidates=scale_candidates,
         coarse_candidates=coarse_candidates,
         row_chunk_size=row_chunk_size,

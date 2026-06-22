@@ -100,12 +100,6 @@ echo "run ppl: $RUN_PPL | run lm-eval: $RUN_LM_EVAL | wandb: $RUN_WANDB | delete
 for GRID in $GRIDS; do
   for SCHEME in $SCHEMES; do
     for ASSIGNMENT in $ASSIGNMENTS; do
-      if [[ "$GRID" == "neuqi" && "$SCHEME" != "asymmetric" ]]; then
-        echo
-        echo "!!! skipping grid=neuqi scheme=$SCHEME because NeUQI is asymmetric affine"
-        continue
-      fi
-
       RUN_NAME="${MODEL_TAG}_${GRID}_${SCHEME}_${ASSIGNMENT}_w${BITS}g${GROUP_SIZE}_${CALIB_DATASET}n${N_CALIB}"
       CKPT_DIR="$OUTPUT_DIR/$RUN_NAME"
 

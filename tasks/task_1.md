@@ -59,8 +59,9 @@ models, then quantizes the rotated weights on the existing uniform grid. Full
 SpinQuant still requires Cayley-SGD rotation learning plus optional online
 Hadamard `R3`/`R4`, activation quantization, and KV-cache quantization paths.
 
-`neuqi` initializes an asymmetric affine uniform grid with calibration
-`diag_H`, a scale search, and floating-point zero-points. It is a grid
+`neuqi` initializes a uniform grid with calibration `diag_H` and a scale
+search. The asymmetric variant uses floating-point zero-points; the symmetric
+variant keeps zero-point fixed at 0 on signed integer codes. It is a grid
 initialization baseline, so the existing assignment methods can run on top of
 its fixed `scale`/`zero_point`.
 
