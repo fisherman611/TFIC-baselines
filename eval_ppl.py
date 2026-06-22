@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import json
 import argparse
+import random
 
 import torch
 import torch.nn as nn
@@ -33,11 +34,68 @@ from wandb_utils import collect_ppl_wandb_metrics, log_to_wandb, wandb_enabled_f
 # --------------------------------------------------------------------------
 # Test-set token streams. We tokenize the whole split once and chunk it.
 # --------------------------------------------------------------------------
-def get_wikitext2_testenc(tokenizer):
+def _tokenize_wikitext2_rows(tokenizer, rows, chunk_chars=20000):
+    """Tokenize WikiText2 in small text chunks to avoid tokenizer max-length warnings."""
+    chunks = []
+    current = ""
+
+    for index, row in enumerate(rows):
+        piece = row if index == 0 else "\n\n" + row
+        if current and len(current) + len(piece) > chunk_chars:
+            ids = tokenizer(
+                current,
+                return_tensors="pt",
+                add_special_tokens=False,
+                verbose=False,
+            ).input_ids
+            if ids.numel() > 0:
+                chunks.append(ids)
+            current = piece
+        else:
+            current += piece
+
+    if current:
+        ids = tokenizer(
+            current,
+            return_tensors="pt",
+            add_special_tokens=False,
+            verbose=False,
+        ).input_ids
+        if ids.numel() > 0:
+            chunks.append(ids)
+
+    if not chunks:
+        raise RuntimeError("WikiText2: no tokens found in test split.")
+
+    enc = torch.cat(chunks, dim=1)
+    if getattr(tokenizer, "add_bos_token", False) and tokenizer.bos_token_id is not None:
+        bos = torch.tensor([[tokenizer.bos_token_id]], dtype=enc.dtype)
+        enc = torch.cat([bos, enc], dim=1)
+    return enc
+
+
+def _sample_windows(enc, n_samples, seqlen, seed, dataset_name):
+    if n_samples is None:
+        return enc
+    if n_samples <= 0:
+        raise ValueError(f"{dataset_name}: sample count must be positive.")
+    if enc.shape[1] < seqlen:
+        raise RuntimeError(f"{dataset_name}: test stream ({enc.shape[1]} tok) shorter than seqlen={seqlen}")
+
+    rng = random.Random(seed)
+    windows = []
+    max_start = enc.shape[1] - seqlen
+    for _ in range(n_samples):
+        start = rng.randint(0, max_start)
+        windows.append(enc[:, start:start + seqlen])
+    return torch.cat(windows, dim=1)
+
+
+def get_wikitext2_testenc(tokenizer, n_samples=None, seqlen=2048, seed=42):
     from datasets import load_dataset
     test = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
-    text = "\n\n".join(test["text"])
-    return tokenizer(text, return_tensors="pt").input_ids
+    enc = _tokenize_wikitext2_rows(tokenizer, test["text"])
+    return _sample_windows(enc, n_samples, seqlen, seed, "WikiText2")
 
 
 def get_c4_testenc(tokenizer, n_samples, seqlen, seed, cache_dir="./dataset_cache"):
@@ -137,6 +195,8 @@ def main():
     p.add_argument("--seqlen", type=int, default=2048)
     p.add_argument("--c4-samples", type=int, default=128,
                    help="number of seqlen windows drawn for C4.")
+    p.add_argument("--wikitext2-samples", type=int, default=None,
+                   help="optional number of seqlen windows drawn for WikiText2.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cache-dir", type=str, default="./dataset_cache",
                    help="dir for cached C4 token windows.")
@@ -157,6 +217,7 @@ def main():
     print("=" * 70)
     print("Perplexity eval | model:", args.model_path)
     print("datasets:", args.datasets, "| seqlen:", args.seqlen)
+    print("samples:", "wikitext2", args.wikitext2_samples, "| c4", args.c4_samples)
     print("=" * 70)
 
     tok = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
@@ -180,7 +241,7 @@ def main():
     for ds in args.datasets:
         print(f"\n[{ds}] building test stream ...")
         if ds == "wikitext2":
-            enc = get_wikitext2_testenc(tok)
+            enc = get_wikitext2_testenc(tok, args.wikitext2_samples, args.seqlen, args.seed)
         else:
             enc = get_c4_testenc(tok, args.c4_samples, args.seqlen, args.seed,
                                  cache_dir=args.cache_dir)
@@ -206,6 +267,7 @@ def main():
                 "model_path": args.model_path,
                 "datasets": args.datasets,
                 "seqlen": args.seqlen,
+                "wikitext2_samples": args.wikitext2_samples,
                 "c4_samples": args.c4_samples,
                 "seed": args.seed,
                 "cache_dir": args.cache_dir,

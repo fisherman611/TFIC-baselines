@@ -41,6 +41,7 @@ SEQLEN=${SEQLEN:-2048}
 CALIB_SEED=${CALIB_SEED:-42}
 EVAL_SEED=${EVAL_SEED:-1234}
 C4_SAMPLES=${C4_SAMPLES:-128}
+WIKITEXT2_SAMPLES=${WIKITEXT2_SAMPLES:-}
 
 MODEL_DEVICE_MAP=${MODEL_DEVICE_MAP:-auto}
 INPUT_DEVICE=${INPUT_DEVICE:-auto}
@@ -93,7 +94,7 @@ echo "schemes: $SCHEMES"
 echo "assignments: $ASSIGNMENTS"
 echo "bits/group: W${BITS} g${GROUP_SIZE}"
 echo "calibration: ${CALIB_DATASET}/${N_CALIB}/${SEQLEN} seed=${CALIB_SEED}"
-echo "eval c4: samples=${C4_SAMPLES} seed=${EVAL_SEED}"
+echo "eval ppl: wikitext2_samples=${WIKITEXT2_SAMPLES:-all} c4_samples=${C4_SAMPLES} seed=${EVAL_SEED}"
 echo "devices: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all} model_device_map=$MODEL_DEVICE_MAP input_device=$INPUT_DEVICE stats_device=$STATS_DEVICE"
 echo "run ppl: $RUN_PPL | run lm-eval: $RUN_LM_EVAL | wandb: $RUN_WANDB | delete checkpoints: $DELETE_CHECKPOINT"
 
@@ -220,10 +221,15 @@ for GRID in $GRIDS; do
 
       if [[ "$RUN_PPL" == "1" ]]; then
         echo ">>> [2/3] PPL eval: WikiText2 test + C4 validation"
+        PPL_ARGS=()
+        if [[ -n "$WIKITEXT2_SAMPLES" ]]; then
+          PPL_ARGS+=(--wikitext2-samples "$WIKITEXT2_SAMPLES")
+        fi
         PYTHONPATH=. python eval_ppl.py \
           --model-path "$CKPT_DIR" \
           --datasets wikitext2 c4 \
           --seqlen "$SEQLEN" \
+          "${PPL_ARGS[@]}" \
           --c4-samples "$C4_SAMPLES" \
           --seed "$EVAL_SEED" \
           --device-map "$MODEL_DEVICE_MAP" \
