@@ -435,31 +435,40 @@ layers in one calibration pass. This is intended only for smoke testing; use
 `--k 16`, the full calibration settings, and more optimization steps for the
 actual benchmark.
 
-Run smoke checks for every implemented assignment method:
+Run smoke checks for every implemented assignment method across grid baselines:
 
 ```bash
 bash run_assignment_smokes.sh
 ```
 
-The script runs `rtn`, `gptq`, `gptaq`, `gptaq_rescomp`, `flexround`, and `tfic` against the existing
-asymmetric AWQ scale file. Each cell uses one calibration sample and quantizes
-only the first linear layer via `--max-layers 1`. It also passes `--no-save`,
-so the four smoke cells do not write four full LLaMA checkpoints. The script
-verifies model loading, calibration, grid construction, and assignment only.
+The script runs `rtn`, `gptq`, `gptaq`, `gptaq_rescomp`, `flexround`, and
+`tfic` over `vanilla`, `awq`, `flatquant_diag`, `spinquant`, and `neuqi` where
+the required grid artifacts are available. Each cell uses one calibration
+sample and quantizes only the first linear layer via `--max-layers 1`. It also
+passes `--no-save`, so the smoke cells do not write full LLaMA checkpoints.
+The script verifies model loading, calibration, grid construction, and
+assignment only.
 
-Run selected methods only:
+Run selected grids or methods only:
 
 ```bash
+GRIDS="vanilla neuqi" SCHEMES="asymmetric" bash run_assignment_smokes.sh
 METHODS="rtn flexround" bash run_assignment_smokes.sh
 ```
 
-Override model or AWQ scale paths when necessary:
+Override model or artifact paths when necessary:
 
 ```bash
 MODEL_PATH=/path/to/model \
 AWQ_SCALES_PT=/path/to/awq_scales.pt \
+FLATQUANT_PARAMS_PT=/path/to/flatquant_diag_params.pt \
+SPINQUANT_ROTATIONS_PT=/path/to/spinquant_rotations.pt \
 bash run_assignment_smokes.sh
 ```
+
+For smoke/debug only, SpinQuant uses random rotations by default when
+`SPINQUANT_ROTATIONS_PT` is unset. Set `SPINQUANT_RANDOM_ROTATIONS=0` to skip
+SpinQuant unless a learned rotations checkpoint is provided.
 
 Vanilla + TFIC:
 
