@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 from tqdm import tqdm
 
@@ -104,6 +105,46 @@ def test_awq_scheme_helpers_match_main_builder():
     assert torch.equal(asymmetric.round_to_nearest()[0], asymmetric_main.round_to_nearest()[0])
 
 
+def test_awq_grid_applies_per_output_group_clipping():
+    weights, awq_scales = awq_toy_inputs()
+    unclipped = build_awq_quantization_grid(
+        weights, awq_scales, bits=3, group_size=4, scheme="asymmetric"
+    )
+    clip_max = unclipped.scaled_weights.reshape(2, 2, 4).abs().amax(-1, keepdim=True) * 0.5
+    clipped = build_awq_quantization_grid(
+        weights, awq_scales, bits=3, group_size=4,
+        scheme="asymmetric", clip_max=clip_max,
+    )
+
+    assert clipped.clip_max.shape == (2, 2, 1)
+    assert not torch.allclose(clipped.scale, unclipped.scale)
+    assert torch.all(clipped.scaled_weights.reshape(2, 2, 4).abs() <= clip_max)
+
+
+def test_awq_grid_is_finite_for_zero_fp16_groups():
+    grid = build_awq_quantization_grid(
+        torch.zeros(2, 4, dtype=torch.float16),
+        torch.ones(4, dtype=torch.float16),
+        bits=3,
+        group_size=4,
+    )
+    codes, dequantized = grid.round_to_nearest()
+
+    assert torch.isfinite(grid.scale).all()
+    assert torch.isfinite(codes).all()
+    assert torch.isfinite(dequantized).all()
+
+
+@pytest.mark.parametrize(
+    "scales",
+    [torch.tensor([1.0, 0.0, 1.0, 1.0, 1.0]), torch.full((5,), float("nan"))],
+)
+def test_awq_grid_rejects_invalid_scales(scales):
+    weights, _ = awq_toy_inputs()
+    with pytest.raises(ValueError, match="finite and positive"):
+        build_awq_quantization_grid(weights, scales, bits=3, group_size=4)
+
+
 def _demo_awq_grid_logic():
     weights, awq_scales = awq_toy_inputs()
     for scheme in tqdm(SCHEMES, desc="awq grid demo"):
@@ -142,6 +183,8 @@ if __name__ == "__main__":
         test_awq_grid_matches_eigenflip_from_awq,
         test_awq_grid_round_to_nearest_shape_and_range,
         test_awq_scheme_helpers_match_main_builder,
+        test_awq_grid_applies_per_output_group_clipping,
+        test_awq_grid_is_finite_for_zero_fp16_groups,
     ]
     for test in tqdm(tests, desc="awq grid tests"):
         test()

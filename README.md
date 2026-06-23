@@ -206,7 +206,15 @@ Each cell runs:
 
 ## Generate AWQ Scales
 
-AWQ requires per-layer scales before running the AWQ grid.
+AWQ requires per-layer calibration artifacts before running the AWQ grid. The
+generator uses the paper statistic `mean(abs(X))`, searches
+`scale = activation_scale ** alpha`, and then searches symmetric clipping
+bounds per output channel and weight group. As in the official AWQ code, Q/K
+projections skip clipping because their error is coupled by the QK product.
+
+New artifacts include model, bit-width, group-size, and quantization-scheme
+metadata; the runner rejects mismatched artifacts. Legacy scale-only `.pt`
+files remain loadable, but do not provide AWQ weight clipping.
 
 Asymmetric AWQ scales:
 
@@ -237,6 +245,11 @@ uv run python -m scripts.generate_awq_scales \
 ```
 
 ## Run AWQ Baselines
+
+This repository evaluates AWQ as a fixed accuracy grid and saves dense
+dequantized checkpoints. It does not provide AWQ integer packing or TinyChat
+kernels. Assignments other than `rtn` are intentional `AWQ grid x assignment`
+hybrids rather than the standalone AWQ algorithm.
 
 Run AWQ asymmetric and symmetric:
 

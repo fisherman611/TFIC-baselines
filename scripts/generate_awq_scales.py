@@ -7,11 +7,11 @@ The output is a .pt file compatible with:
 
 For each Linear layer, this script collects:
 
-* salience_l2 = E[x_j^2] from calibration activations
-* a small activation sample X_sample
+* activation_scale = E[abs(x_j)] from calibration activations
+* a uniform reservoir sample X_sample
 
-Then it calls ``eigenflip.quantization.awq_scales.compute_awq_scales`` to run
-the AWQ alpha grid search.
+It then runs the AWQ alpha grid search followed by the paper's per-output,
+per-group weight-clipping search.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from eigenflip.quantization.awq_scales import compute_awq_scales
+from eigenflip.quantization.awq_scales import compute_awq_clip, compute_awq_scales
 from eigenflip.statistics.collect_fast import _resolve_input_device, is_lm_head
 from baseline_utils.runtime import build_model_slug, load_runtime_env
 
@@ -43,36 +43,42 @@ class AWQScaleAccumulator:
     def __init__(self, in_features: int, sample_tokens: int):
         self.in_features = in_features
         self.sample_tokens = sample_tokens
-        self.s2 = torch.zeros(in_features, dtype=torch.float64)
+        self.sum_abs = torch.zeros(in_features, dtype=torch.float64)
         self.n = 0
-        self.samples: list[torch.Tensor] = []
+        self.sample_buffer: torch.Tensor | None = None
+        self.sample_priorities: torch.Tensor | None = None
         self.sampled = 0
 
     @torch.no_grad()
     def add(self, x: torch.Tensor):
         xf = x.detach().reshape(-1, x.shape[-1]).float().cpu()
-        self.s2 += (xf * xf).sum(dim=0).double()
+        self.sum_abs += xf.abs().sum(dim=0).double()
         self.n += xf.shape[0]
 
-        remaining = self.sample_tokens - self.sampled
-        if remaining > 0:
-            take = min(remaining, xf.shape[0])
-            self.samples.append(xf[:take].clone())
-            self.sampled += take
+        priorities = torch.rand(xf.shape[0])
+        if self.sample_buffer is not None:
+            xf = torch.cat([self.sample_buffer, xf], dim=0)
+            priorities = torch.cat([self.sample_priorities, priorities], dim=0)
+        keep = min(self.sample_tokens, xf.shape[0])
+        selected = torch.topk(priorities, keep, sorted=False).indices
+        self.sample_buffer = xf.index_select(0, selected).clone()
+        self.sample_priorities = priorities.index_select(0, selected).clone()
+        self.sampled = keep
 
-    def salience_l2(self) -> torch.Tensor:
+    def activation_scale(self) -> torch.Tensor:
         if self.n <= 0:
             raise RuntimeError("no calibration activations were collected")
-        return (self.s2 / self.n).float()
+        return (self.sum_abs / self.n).float()
 
     def x_sample(self) -> torch.Tensor:
-        if not self.samples:
+        if self.sample_buffer is None:
             raise RuntimeError("no activation sample was collected")
-        return torch.cat(self.samples, dim=0).float()
+        return self.sample_buffer.float()
 
     def free(self):
-        self.s2 = None
-        self.samples = []
+        self.sum_abs = None
+        self.sample_buffer = None
+        self.sample_priorities = None
 
 
 class InvalidCalibrationTokenIds(ValueError):
@@ -139,7 +145,15 @@ def parse_args():
     parser.add_argument("--bits", type=int, default=3, choices=[2, 3, 4, 8])
     parser.add_argument("--group-size", type=int, default=128)
     parser.add_argument("--n-grid", type=int, default=20)
-    parser.add_argument("--sample-tokens", type=int, default=128)
+    parser.add_argument("--sample-tokens", type=int, default=512)
+    parser.add_argument(
+        "--weight-clipping",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run AWQ per-output-channel/per-group clipping search.",
+    )
+    parser.add_argument("--clip-grid", type=int, default=20)
+    parser.add_argument("--clip-max-shrink", type=float, default=0.5)
     parser.add_argument("--layer-batch-size", type=int, default=4)
     parser.add_argument("--calib-dataset", choices=["c4", "wikitext2"], default="c4")
     parser.add_argument("--n-calib", type=int, default=128)
@@ -156,6 +170,12 @@ def parse_args():
 def main():
     args = parse_args()
     load_runtime_env()
+    if args.sample_tokens <= 0:
+        raise ValueError("--sample-tokens must be positive")
+    if args.clip_grid <= 0:
+        raise ValueError("--clip-grid must be positive")
+    if not (0 < args.clip_max_shrink <= 1):
+        raise ValueError("--clip-max-shrink must be in (0, 1]")
     torch.manual_seed(args.seed)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
@@ -201,6 +221,14 @@ def main():
     print("calibration:", args.calib_dataset, args.n_calib, args.seqlen)
     print("devices:", "device_map", args.device_map, "input_device", input_device)
     print("sample tokens per layer:", args.sample_tokens)
+    print(
+        "weight clipping:",
+        args.weight_clipping,
+        "grid",
+        args.clip_grid,
+        "max_shrink",
+        args.clip_max_shrink,
+    )
     print("out:", out_path)
     print("=" * 70)
 
@@ -273,26 +301,57 @@ def main():
 
         for name, module in tqdm(batch, desc="  awq scale search", leave=False):
             acc = accs[name]
+            x_sample = acc.x_sample()
             scales, alpha, error = compute_awq_scales(
                 module.weight.data,
-                acc.salience_l2(),
-                acc.x_sample(),
+                acc.activation_scale(),
+                x_sample,
                 bits=args.bits,
                 group_size=args.group_size,
                 n_grid=args.n_grid,
                 scheme=args.scheme,
             )
+            clip_max = None
+            clip_skipped = any(
+                token in name for token in ("q_", "k_", "query", "key", "Wqkv")
+            )
+            if args.weight_clipping and not clip_skipped:
+                weight = module.weight.data
+                scales_on_weight = scales.to(device=weight.device, dtype=weight.dtype)
+                clip_max = compute_awq_clip(
+                    weight * scales_on_weight.unsqueeze(0),
+                    x_sample.to(device=weight.device, dtype=weight.dtype)
+                    / scales_on_weight.unsqueeze(0),
+                    bits=args.bits,
+                    group_size=args.group_size,
+                    scheme=args.scheme,
+                    n_grid=args.clip_grid,
+                    max_shrink=args.clip_max_shrink,
+                    sample_tokens=args.sample_tokens,
+                )
             result[name] = {
                 "scales": scales.detach().cpu(),
+                "clip_max": None if clip_max is None else clip_max.detach().cpu(),
                 "alpha": float(alpha),
                 "error": float(error),
                 "scheme": args.scheme,
                 "bits": args.bits,
                 "group_size": args.group_size,
+                "model_path": args.model_path,
+                "format_version": 2,
+                "activation_statistic": "mean_abs",
+                "weight_clipping": bool(args.weight_clipping),
+                "clip_skipped": bool(clip_skipped),
+                "clip_grid": args.clip_grid,
+                "clip_max_shrink": args.clip_max_shrink,
                 "n_calib_tokens": int(acc.n),
                 "sample_tokens": int(acc.sampled),
             }
-            print(f"  {name}: alpha={alpha:.4f} error={error:.6g}")
+            clipping = "skipped" if clip_max is None else "searched"
+            print(
+                f"  {name}: alpha={alpha:.4f} error={error:.6g} "
+                f"clipping={clipping}"
+            )
             acc.free()
 
         torch.save(result, out_path)

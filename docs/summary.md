@@ -130,7 +130,8 @@ IntegerQuantizedTensorState.from_rtn(..., scheme="asymmetric")
 
 Status: implemented in `grid_baselines/awq_quantization_grid.py`.
 
-AWQ rescales input channels before quantization, then folds the inverse scale
+AWQ rescales input channels before quantization, optionally clips each
+output-channel/group of the scaled weight, then folds the inverse scale
 back into the dequantized weights.
 
 Given per-input-channel AWQ scale `a`:
@@ -177,6 +178,7 @@ grid = build_asymmetric_awq_quantization_grid(
     awq_scales,
     bits=bits,
     group_size=group_size,
+    clip_max=clip_max,
 )
 q, W_hat = grid.round_to_nearest()
 ```

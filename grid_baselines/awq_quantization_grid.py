@@ -30,14 +30,26 @@ class AWQQuantizationGrid:
     padded_in_features: int
     original_dtype: torch.dtype
     scheme: str = "asymmetric"
+    clip_max: torch.Tensor | None = None
 
     @torch.no_grad()
     def quantize(self, weights: torch.Tensor | None = None) -> torch.Tensor:
         """Assign weights to nearest integer codes on the AWQ-scaled grid."""
         source = self.float_weights if weights is None else weights
+        if source.dim() != 2:
+            raise ValueError(f"expected 2D weights, got shape {tuple(source.shape)}")
+        if source.shape[0] != self.float_weights.shape[0]:
+            raise ValueError(
+                f"expected {self.float_weights.shape[0]} rows, got {source.shape[0]}"
+            )
         if source.shape[-1] != self.padded_in_features:
             source = self._pad_like_grid(source)
         scaled = source * self.awq_scales
+        if self.clip_max is not None:
+            grouped = scaled.reshape(
+                scaled.shape[0], -1, self.group_size
+            ).clamp(-self.clip_max, self.clip_max)
+            scaled = grouped.reshape_as(scaled)
         scale_q = self.scale * self.awq_scales
         codes = torch.round(scaled / scale_q + self.zero_point)
         return codes.clamp(self.qmin, self.qmax)
@@ -45,6 +57,12 @@ class AWQQuantizationGrid:
     @torch.no_grad()
     def dequantize(self, integer_weights: torch.Tensor) -> torch.Tensor:
         """Reconstruct unscaled weights from integer AWQ grid codes."""
+        expected = (self.float_weights.shape[0], self.padded_in_features)
+        if tuple(integer_weights.shape) != expected:
+            raise ValueError(
+                f"expected integer weights with shape {expected}, "
+                f"got {tuple(integer_weights.shape)}"
+            )
         weights = (integer_weights - self.zero_point) * self.scale
         if self.padded_in_features > self.in_features:
             weights = weights[:, : self.in_features]
@@ -81,6 +99,16 @@ def _expand_group(group_values: torch.Tensor, group_size: int, padded_in: int) -
     return group_values.repeat(1, 1, group_size).reshape(rows, padded_in)
 
 
+def _minimum_range(reference: torch.Tensor, eps: float) -> torch.Tensor:
+    floor = torch.as_tensor(eps, device=reference.device, dtype=reference.dtype)
+    if floor == 0:
+        floor = torch.nextafter(
+            torch.zeros((), device=reference.device, dtype=reference.dtype),
+            torch.ones((), device=reference.device, dtype=reference.dtype),
+        )
+    return floor
+
+
 @torch.no_grad()
 def build_awq_quantization_grid(
     weights: torch.Tensor,
@@ -89,7 +117,8 @@ def build_awq_quantization_grid(
     group_size: int,
     *,
     scheme: str = "asymmetric",
-    eps: float = 1e-8,
+    eps: float = 1e-5,
+    clip_max: torch.Tensor | None = None,
 ) -> AWQQuantizationGrid:
     """Build an AWQ-scaled grid for ``weights``.
 
@@ -121,6 +150,10 @@ def build_awq_quantization_grid(
         raise ValueError(
             f"expected awq_scales with {in_features} values, got {scales.shape[1]}"
         )
+    if not torch.isfinite(scales).all() or torch.any(scales <= 0):
+        raise ValueError("awq_scales values must be finite and positive")
+    if not torch.isfinite(weights).all():
+        raise ValueError("weights must contain only finite values")
 
     scaled_weights = weights * scales
     n_groups = (in_features + group_size - 1) // group_size
@@ -137,19 +170,37 @@ def build_awq_quantization_grid(
         padded_weights = weights
         padded_scales = scales
 
+    grouped_clip = None
+    if clip_max is not None:
+        grouped_clip = torch.as_tensor(clip_max, device=device, dtype=dtype)
+        if grouped_clip.shape == (rows, n_groups):
+            grouped_clip = grouped_clip.unsqueeze(-1)
+        if grouped_clip.shape != (rows, n_groups, 1):
+            raise ValueError(
+                "clip_max must have shape "
+                f"({rows}, {n_groups}, 1), got {tuple(grouped_clip.shape)}"
+            )
+        if not torch.isfinite(grouped_clip).all() or torch.any(grouped_clip <= 0):
+            raise ValueError("clip_max values must be finite and positive")
+
     grouped = padded_scaled.reshape(rows, n_groups, group_size)
+    if grouped_clip is not None:
+        grouped = grouped.clamp(-grouped_clip, grouped_clip)
+        padded_scaled = grouped.reshape(rows, padded_in)
+
+    floor = _minimum_range(grouped, eps)
     if scheme == "symmetric":
         qmin = -(2 ** (bits - 1))
         qmax = 2 ** (bits - 1) - 1
         absmax = grouped.abs().amax(dim=2, keepdim=True)
-        scale_q_group = (absmax / qmax).clamp_min(eps)
+        scale_q_group = absmax.clamp_min(floor) / qmax
         zero_point_group = torch.zeros_like(scale_q_group)
     else:
         wmin = grouped.min(dim=2, keepdim=True)[0]
         wmax = grouped.max(dim=2, keepdim=True)[0]
         qmin = 0
         qmax = 2**bits - 1
-        scale_q_group = ((wmax - wmin) / qmax).clamp_min(eps)
+        scale_q_group = (wmax - wmin).clamp_min(floor) / qmax
         zero_point_group = torch.round(-wmin / scale_q_group).clamp(qmin, qmax)
 
     scale_q = _expand_group(scale_q_group, group_size, padded_in)
@@ -169,6 +220,7 @@ def build_awq_quantization_grid(
         padded_in_features=padded_in,
         original_dtype=dtype,
         scheme=scheme,
+        clip_max=grouped_clip,
     )
 
 
@@ -179,7 +231,8 @@ def build_symmetric_awq_quantization_grid(
     bits: int,
     group_size: int,
     *,
-    eps: float = 1e-8,
+    eps: float = 1e-5,
+    clip_max: torch.Tensor | None = None,
 ) -> AWQQuantizationGrid:
     """Build a symmetric AWQ-scaled grid."""
     return build_awq_quantization_grid(
@@ -189,6 +242,7 @@ def build_symmetric_awq_quantization_grid(
         group_size,
         scheme="symmetric",
         eps=eps,
+        clip_max=clip_max,
     )
 
 
@@ -199,7 +253,8 @@ def build_asymmetric_awq_quantization_grid(
     bits: int,
     group_size: int,
     *,
-    eps: float = 1e-8,
+    eps: float = 1e-5,
+    clip_max: torch.Tensor | None = None,
 ) -> AWQQuantizationGrid:
     """Build an asymmetric AWQ-scaled grid."""
     return build_awq_quantization_grid(
@@ -209,4 +264,5 @@ def build_asymmetric_awq_quantization_grid(
         group_size,
         scheme="asymmetric",
         eps=eps,
+        clip_max=clip_max,
     )

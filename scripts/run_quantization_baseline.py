@@ -31,7 +31,10 @@ from assignment_methods import (
     RTNAssignment,
     TFICAssignment,
 )
-from eigenflip.quantization.awq_scales import scales_from_awq_run
+from eigenflip.quantization.awq_scales import (
+    layer_params_from_awq_run,
+    scales_from_awq_run,
+)
 from eigenflip.statistics.collect_fast import collect_and_encode_awq_style
 from grid_baselines import (
     apply_flatquant_attention_transforms,
@@ -135,9 +138,36 @@ def load_awq_scales(path: str | None) -> dict[str, torch.Tensor]:
         raise ValueError("--grid awq requires --awq-scales-pt")
 
     raw = torch.load(path, map_location="cpu")
-    if raw and isinstance(next(iter(raw.values())), dict):
-        return scales_from_awq_run(raw)
-    return {key: torch.as_tensor(value) for key, value in raw.items()}
+    return scales_from_awq_run(raw)
+
+
+def load_awq_layer_params(path: str | None, args=None) -> dict[str, dict]:
+    if not path:
+        raise ValueError("--grid awq requires --awq-scales-pt")
+
+    params = layer_params_from_awq_run(torch.load(path, map_location="cpu"))
+    if args is None:
+        return params
+
+    for layer_name, info in params.items():
+        for field, expected in (
+            ("bits", args.bits),
+            ("group_size", args.group_size),
+            ("scheme", args.scheme),
+        ):
+            actual = info.get(field)
+            if actual is not None and actual != expected:
+                raise ValueError(
+                    f"AWQ artifact mismatch for {layer_name!r}: "
+                    f"{field}={actual!r}, requested {expected!r}"
+                )
+        artifact_model = info.get("model_path")
+        if artifact_model is not None and artifact_model != args.model_path:
+            raise ValueError(
+                f"AWQ artifact for {layer_name!r} was generated from "
+                f"{artifact_model!r}, requested model is {args.model_path!r}"
+            )
+    return params
 
 
 def load_flatquant_diag_params(path: str | None) -> dict[str, dict[str, torch.Tensor]]:
@@ -201,6 +231,7 @@ def build_grid(
     stats,
     awq_scales: torch.Tensor | None,
     flatquant_diag_params: dict[str, torch.Tensor] | None,
+    awq_clip_max: torch.Tensor | None = None,
 ):
     if name == "vanilla":
         return build_vanilla_quantization_grid(
@@ -218,6 +249,7 @@ def build_grid(
             bits=args.bits,
             group_size=args.group_size,
             scheme=args.scheme,
+            clip_max=awq_clip_max,
         )
     if name in {"flatquant", "flatquant_diag"}:
         if flatquant_diag_params is None:
@@ -650,7 +682,11 @@ def main():
             )
 
     calibration = load_calibration(tokenizer, args)
-    awq_scales_by_layer = load_awq_scales(args.awq_scales_pt) if args.grid == "awq" else {}
+    awq_params_by_layer = (
+        load_awq_layer_params(args.awq_scales_pt, args)
+        if args.grid == "awq"
+        else {}
+    )
     flatquant_diag_by_layer = (
         load_flatquant_diag_params(args.flatquant_params_pt)
         if args.grid == "flatquant_diag"
@@ -679,10 +715,13 @@ def main():
     def callback(layer_name, module, stats):
         weights = module.weight.data
         layer_awq_scales = None
+        layer_awq_clip_max = None
         if args.grid == "awq":
-            layer_awq_scales = awq_scales_by_layer.get(layer_name)
-            if layer_awq_scales is None:
+            layer_awq_params = awq_params_by_layer.get(layer_name)
+            if layer_awq_params is None:
                 raise KeyError(f"no AWQ scales for layer {layer_name!r}")
+            layer_awq_scales = layer_awq_params["scales"]
+            layer_awq_clip_max = layer_awq_params.get("clip_max")
         layer_flatquant_diag_params = None
         if args.grid in {"flatquant", "flatquant_diag"}:
             layer_flatquant_diag_params = flatquant_diag_by_layer.get(layer_name)
@@ -695,6 +734,7 @@ def main():
             stats,
             layer_awq_scales,
             layer_flatquant_diag_params,
+            awq_clip_max=layer_awq_clip_max,
         )
         if args.assignment == "rtn":
             corrected, _info = assignment.apply_to_grid(grid)

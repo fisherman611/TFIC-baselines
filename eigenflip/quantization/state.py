@@ -141,7 +141,9 @@ class IntegerQuantizedTensorState:
     @torch.no_grad()
     def from_awq(cls, W: torch.Tensor, awq_scales: torch.Tensor,
                  bits: int, group_size: int,
-                 scheme: str = "asymmetric") -> "IntegerQuantizedTensorState":
+                 scheme: str = "asymmetric",
+                 clip_max: Optional[torch.Tensor] = None,
+                 eps: float = 1e-5) -> "IntegerQuantizedTensorState":
         """
         AWQ base: per-input-channel scales `awq_scales` [in_features] already
         chosen by the AWQ grid search. We quantize W * s group-wise, and store
@@ -154,12 +156,22 @@ class IntegerQuantizedTensorState:
         """
         if scheme not in {"asymmetric", "symmetric"}:
             raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
+        if W.dim() != 2:
+            raise ValueError(f"expected a 2D weight tensor, got shape {tuple(W.shape)}")
+        if bits <= 0 or group_size <= 0:
+            raise ValueError("bits and group_size must be positive")
         if scheme == "symmetric" and bits < 2:
             raise ValueError("symmetric AWQ requires bits >= 2")
 
         C, in_features = W.shape
         device, dtype = W.device, W.dtype
-        s = awq_scales.to(device=device, dtype=dtype).reshape(1, in_features)
+        s = awq_scales.to(device=device, dtype=dtype).reshape(1, -1)
+        if s.shape[1] != in_features:
+            raise ValueError(
+                f"expected {in_features} AWQ scales, got {s.shape[1]}"
+            )
+        if not torch.isfinite(s).all() or torch.any(s <= 0):
+            raise ValueError("awq_scales values must be finite and positive")
         Ws = W * s
 
         n_groups = (in_features + group_size - 1) // group_size
@@ -173,18 +185,38 @@ class IntegerQuantizedTensorState:
             Wp, sp = Ws, s
 
         Wg = Wp.reshape(C, n_groups, group_size)
+        if clip_max is not None:
+            clip = torch.as_tensor(clip_max, device=device, dtype=dtype)
+            if clip.shape == (C, n_groups):
+                clip = clip.unsqueeze(-1)
+            if clip.shape != (C, n_groups, 1):
+                raise ValueError(
+                    f"clip_max must have shape ({C}, {n_groups}, 1), "
+                    f"got {tuple(clip.shape)}"
+                )
+            if not torch.isfinite(clip).all() or torch.any(clip <= 0):
+                raise ValueError("clip_max values must be finite and positive")
+            Wg = Wg.clamp(-clip, clip)
+            Wp = Wg.reshape(C, padded_in)
+
+        floor = torch.as_tensor(eps, device=device, dtype=dtype)
+        if floor == 0:
+            floor = torch.nextafter(
+                torch.zeros((), device=device, dtype=dtype),
+                torch.ones((), device=device, dtype=dtype),
+            )
         if scheme == "symmetric":
             min_int = -(2 ** (bits - 1))
             max_int = 2 ** (bits - 1) - 1
             absmax = Wg.abs().amax(dim=2, keepdim=True)
-            scale_g = (absmax / max_int).clamp_min(1e-8)
+            scale_g = absmax.clamp_min(floor) / max_int
             zp_g = torch.zeros_like(scale_g)
         else:
             min_int = 0
             max_int = 2 ** bits - 1
             wmin = Wg.min(dim=2, keepdim=True)[0]
             wmax = Wg.max(dim=2, keepdim=True)[0]
-            scale_g = ((wmax - wmin) / max_int).clamp_min(1e-8)
+            scale_g = (wmax - wmin).clamp_min(floor) / max_int
             zp_g = torch.round(-wmin / scale_g).clamp(min_int, max_int)
 
         scale_q = cls._expand_group(scale_g, group_size, padded_in)

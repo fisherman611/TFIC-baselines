@@ -26,7 +26,7 @@ from eigenflip.encoders.dense_reference import DenseGPTQ
 from eigenflip.encoders.shrinkage import ShrinkageGPTQ
 from eigenflip.encoders.tfic import TFICEncoder
 from eigenflip.encoders.tfic_fast import TFICEncoder as TFICEncoderFast
-from eigenflip.quantization.awq_scales import scales_from_awq_run
+from eigenflip.quantization.awq_scales import layer_params_from_awq_run
 
 try:
     from baseline_utils.calibration import (
@@ -163,14 +163,12 @@ def main():
             tok, n_samples=args.n_calib, seqlen=args.seqlen, seed=args.seed,
             cache_dir=args.cache_dir)
 
-    awq_scales = {}
+    awq_params = {}
     if args.base == "awq":
         if not args.awq_scales_pt:
             raise ValueError("AWQ base needs --awq-scales-pt")
         raw = torch.load(args.awq_scales_pt, map_location="cpu")
-        awq_scales = (scales_from_awq_run(raw)
-                      if raw and isinstance(next(iter(raw.values())), dict)
-                      else {kk: torch.as_tensor(vv) for kk, vv in raw.items()})
+        awq_params = layer_params_from_awq_run(raw)
 
     enc = build_encoder(args.encoder, args)
     need_H = NEED_H[args.encoder]
@@ -186,15 +184,16 @@ def main():
                 scheme=args.scheme,
             )
         else:
-            sc = awq_scales.get(name)
-            if sc is None:
+            params = awq_params.get(name)
+            if params is None:
                 raise KeyError(f"no AWQ scales for {name}")
             state = IntegerQuantizedTensorState.from_awq(
                 W,
-                sc,
+                params["scales"],
                 args.bits,
                 args.group_size,
                 scheme=args.scheme,
+                clip_max=params.get("clip_max"),
             )
         state = _shift_state_to_non_negative_codes(state)
         corrected, _ = enc.apply(state, stats)
