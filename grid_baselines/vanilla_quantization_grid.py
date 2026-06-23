@@ -16,6 +16,17 @@ from dataclasses import dataclass
 import torch
 
 
+def _safe_eps(reference: torch.Tensor, eps: float) -> torch.Tensor:
+    """Return a positive epsilon representable in ``reference.dtype``."""
+
+    value = torch.as_tensor(eps, device=reference.device, dtype=reference.dtype)
+    if value > 0:
+        return value
+    zero = torch.zeros((), device=reference.device, dtype=reference.dtype)
+    one = torch.ones((), device=reference.device, dtype=reference.dtype)
+    return torch.nextafter(zero, one)
+
+
 @dataclass
 class VanillaQuantizationGrid:
     """Group-wise uniform grid for a weight tensor."""
@@ -36,6 +47,13 @@ class VanillaQuantizationGrid:
     def quantize(self, weights: torch.Tensor | None = None) -> torch.Tensor:
         """Assign weights to nearest integer codes on this fixed grid."""
         source = self.float_weights if weights is None else weights
+        if source.dim() != 2:
+            raise ValueError(f"expected a 2D weight tensor, got {source.dim()}D")
+        if source.shape[0] != self.float_weights.shape[0]:
+            raise ValueError(
+                f"expected {self.float_weights.shape[0]} output rows, "
+                f"got {source.shape[0]}"
+            )
         if source.shape[-1] != self.padded_in_features:
             source = self._pad_like_grid(source)
         codes = torch.round(source / self.scale + self.zero_point)
@@ -44,6 +62,12 @@ class VanillaQuantizationGrid:
     @torch.no_grad()
     def dequantize(self, integer_weights: torch.Tensor) -> torch.Tensor:
         """Reconstruct floating-point weights from integer grid codes."""
+        expected_shape = tuple(self.float_weights.shape)
+        if tuple(integer_weights.shape) != expected_shape:
+            raise ValueError(
+                f"expected integer weights with shape {expected_shape}, "
+                f"got {tuple(integer_weights.shape)}"
+            )
         weights = (integer_weights - self.zero_point) * self.scale
         if self.padded_in_features > self.in_features:
             weights = weights[:, : self.in_features]
@@ -97,6 +121,7 @@ def build_vanilla_quantization_grid(
         q in [-2 ** (bits - 1), 2 ** (bits - 1) - 1]
 
     ``scheme="asymmetric"`` mirrors ``IntegerQuantizedTensorState.from_rtn``:
+        wmin = min(group_min, 0), wmax = max(group_max, 0)
         scale = (wmax - wmin) / (2 ** bits - 1)
         zero_point = round(-wmin / scale)
         q in [0, 2 ** bits - 1]
@@ -122,20 +147,24 @@ def build_vanilla_quantization_grid(
         padded = weights
 
     grouped = padded.reshape(rows, n_groups, group_size)
+    safe_eps = _safe_eps(grouped, eps)
     if scheme == "symmetric":
         qmin = -(2 ** (bits - 1))
         qmax = 2 ** (bits - 1) - 1
         if qmax <= 0:
             raise ValueError("symmetric quantization requires bits >= 2")
         absmax = grouped.abs().amax(dim=2, keepdim=True)
-        scale_group = (absmax / qmax).clamp_min(eps)
+        scale_group = (absmax / qmax).clamp_min(safe_eps)
         zero_point_group = torch.zeros_like(scale_group)
     else:
         wmin = grouped.min(dim=2, keepdim=True)[0]
         wmax = grouped.max(dim=2, keepdim=True)[0]
+        zeros = torch.zeros_like(wmin)
+        wmin = torch.minimum(wmin, zeros)
+        wmax = torch.maximum(wmax, zeros)
         qmin = 0
         qmax = 2**bits - 1
-        scale_group = ((wmax - wmin) / qmax).clamp_min(eps)
+        scale_group = ((wmax - wmin) / qmax).clamp_min(safe_eps)
         zero_point_group = torch.round(-wmin / scale_group).clamp(qmin, qmax)
 
     return VanillaQuantizationGrid(

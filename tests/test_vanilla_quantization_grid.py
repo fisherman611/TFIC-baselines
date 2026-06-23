@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import torch
+import pytest
 from tqdm import tqdm
 
 
@@ -60,6 +61,9 @@ def _manual_asymmetric_rtn(weights: torch.Tensor, bits: int, group_size: int):
     qmax = 2**bits - 1
     wmin = grouped.min(dim=2, keepdim=True)[0]
     wmax = grouped.max(dim=2, keepdim=True)[0]
+    zeros = torch.zeros_like(wmin)
+    wmin = torch.minimum(wmin, zeros)
+    wmax = torch.maximum(wmax, zeros)
     scale_group = ((wmax - wmin) / qmax).clamp_min(1e-8)
     zero_point_group = torch.round(-wmin / scale_group).clamp(qmin, qmax)
     scale = scale_group.repeat(1, 1, group_size).reshape(rows, padded_in)
@@ -113,6 +117,51 @@ def test_quantize_dequantize_matches_manual_groupwise_asymmetric_rtn():
     assert grid.scheme == "asymmetric"
     assert torch.equal(integer_weights[:, : weights.shape[1]], expected_codes)
     assert torch.allclose(dequantized, expected_dequantized, atol=1e-6)
+
+
+def test_asymmetric_grid_includes_zero_for_one_sided_groups():
+    positive = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    negative = -positive
+
+    positive_grid = build_asymmetric_vanilla_quantization_grid(
+        positive, bits=3, group_size=4
+    )
+    negative_grid = build_asymmetric_vanilla_quantization_grid(
+        negative, bits=3, group_size=4
+    )
+    positive_codes, positive_out = positive_grid.round_to_nearest()
+    negative_codes, negative_out = negative_grid.round_to_nearest()
+
+    assert positive_codes[0, -1] == positive_grid.qmax
+    assert torch.allclose(positive_out[0, -1], positive[0, -1])
+    assert negative_codes[0, -1] == negative_grid.qmin
+    assert torch.allclose(negative_out[0, -1], negative[0, -1])
+
+
+@pytest.mark.parametrize("scheme", ["symmetric", "asymmetric"])
+def test_all_zero_fp16_group_stays_finite(scheme):
+    weights = torch.zeros(2, 4, dtype=torch.float16)
+    grid = build_vanilla_quantization_grid(
+        weights, bits=3, group_size=4, scheme=scheme
+    )
+    codes, dequantized = grid.round_to_nearest()
+
+    assert torch.all(grid.scale > 0)
+    assert torch.isfinite(codes).all()
+    assert torch.isfinite(dequantized).all()
+    assert torch.equal(dequantized, weights)
+
+
+def test_vanilla_grid_validates_new_weight_shapes():
+    grid = build_vanilla_quantization_grid(
+        torch.randn(2, 5), bits=3, group_size=4
+    )
+    with pytest.raises(ValueError, match="output rows"):
+        grid.quantize(torch.randn(3, 5))
+    with pytest.raises(ValueError, match="expected 5 input features"):
+        grid.quantize(torch.randn(2, 6))
+    with pytest.raises(ValueError, match="integer weights with shape"):
+        grid.dequantize(torch.zeros(2, 5))
 
 
 def test_quantize_can_assign_new_weights_to_fixed_grid():

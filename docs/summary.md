@@ -83,12 +83,14 @@ IntegerQuantizedTensorState.from_rtn(
 
 #### Asymmetric Vanilla Grid
 
-Asymmetric quantization uses the min and max values in each group and learns a
-zero-point.
+Asymmetric quantization uses a zero-inclusive min-max range in each group and
+learns a zero-point.
 
 For bit-width `b`:
 
 ```text
+w_min = min(group_min, 0)
+w_max = max(group_max, 0)
 s = (w_max - w_min) / (2^b - 1)
 z = round(-w_min / s)
 q_min = 0
@@ -115,7 +117,7 @@ grid = build_asymmetric_vanilla_quantization_grid(
 q, W_hat = grid.round_to_nearest()
 ```
 
-This is the default EigenFlip RTN state for backward compatibility:
+The EigenFlip RTN state uses the same grid definition:
 
 ```python
 IntegerQuantizedTensorState.from_rtn(...)

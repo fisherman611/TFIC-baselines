@@ -72,8 +72,9 @@ class IntegerQuantizedTensorState:
         Group-wise RTN. Produces the full integer state so any encoder
         (CLC/EigenFlip/Solve/gptq-encoder) can run on top.
 
-        scheme="asymmetric" keeps the original EigenFlip behavior:
+        scheme="asymmetric" uses zero-inclusive affine min-max quantization:
             q in [0, 2^bits - 1]
+            wmin = min(group_min, 0), wmax = max(group_max, 0)
             scale = (wmax - wmin) / (2^bits - 1)
             zp = round(-wmin / scale)
 
@@ -99,18 +100,27 @@ class IntegerQuantizedTensorState:
             Wp = W
 
         Wg = Wp.reshape(C, n_groups, group_size)
+        eps = torch.as_tensor(1e-8, device=device, dtype=dtype)
+        if eps == 0:
+            eps = torch.nextafter(
+                torch.zeros((), device=device, dtype=dtype),
+                torch.ones((), device=device, dtype=dtype),
+            )
         if scheme == "symmetric":
             min_int = -(2 ** (bits - 1))
             max_int = 2 ** (bits - 1) - 1
             absmax = Wg.abs().amax(dim=2, keepdim=True)
-            scale_g = (absmax / max_int).clamp_min(1e-8)
+            scale_g = (absmax / max_int).clamp_min(eps)
             zp_g = torch.zeros_like(scale_g)
         else:
             min_int = 0
             max_int = 2 ** bits - 1
             wmin = Wg.min(dim=2, keepdim=True)[0]
             wmax = Wg.max(dim=2, keepdim=True)[0]
-            scale_g = ((wmax - wmin) / max_int).clamp_min(1e-8)
+            zeros = torch.zeros_like(wmin)
+            wmin = torch.minimum(wmin, zeros)
+            wmax = torch.maximum(wmax, zeros)
+            scale_g = ((wmax - wmin) / max_int).clamp_min(eps)
             zp_g = torch.round(-wmin / scale_g).clamp(min_int, max_int)
 
         scale = cls._expand_group(scale_g, group_size, padded_in)
