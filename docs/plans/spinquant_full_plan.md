@@ -16,6 +16,9 @@ Implemented:
 - Factorized online R4 and transformed `down_proj` assignment coordinates.
 - Post-RoPE R3 plus token-wise/head-wise K-cache quantization for LlamaAttention.
 - Cayley-SGD orthogonality-preserving update primitive.
+- Repository-native R1/R2 calibration trainer over C4-style samples using the
+  full fake-quantized model cross-entropy objective, saving loader-compatible
+  rotation artifacts.
 - Transform-aware checkpoint manifests for R3/R4 and A/V/K evaluation.
 - Separate project-default `spinquant` no-had and explicit `spinquant_had` grids.
 - Class-dispatched post-RoPE R3 adapters for LLaMA, Qwen2, and Mistral.
@@ -23,7 +26,6 @@ Implemented:
 
 Not implemented:
 
-- joint training of SpinQuant rotations with Cayley SGD
 - parity benchmark against official large-model checkpoints
 
 ## Multi-model requirements
@@ -53,7 +55,6 @@ low-bit inference.
 
 ## Remaining Phases
 
-1. Add Cayley-SGD rotation training on C4 calibration samples.
-2. Add a fused CUDA Hadamard kernel option; the current implementation is a
+1. Add a fused CUDA Hadamard kernel option; the current implementation is a
    correctness-oriented PyTorch factorization.
-3. Compare a one-layer and full-model run against the official implementation.
+2. Compare a one-layer and full-model run against the official implementation.

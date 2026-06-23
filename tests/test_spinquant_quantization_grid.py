@@ -30,10 +30,16 @@ from grid_baselines import (  # noqa: E402
     build_symmetric_spinquant_quantization_grid,
     build_vanilla_quantization_grid,
     cayley_update,
+    capture_spinquant_layer_inputs,
+    identity_spinquant_rotations,
     load_spinquant_rotations,
     random_spinquant_rotations,
+    SpinQuantTrainingConfig,
+    train_spinquant_cross_entropy,
+    train_spinquant_layer_rotations,
 )
 from grid_baselines.transformed_linear import ActivationQuantizedLinear  # noqa: E402
+from scripts.train_flatquant import capture_first_layer_inputs  # noqa: E402
 from tests.examples import assignment_toy_weights  # noqa: E402
 
 
@@ -292,6 +298,114 @@ def test_cayley_update_preserves_orthogonality():
         torch.eye(8, dtype=updated.dtype),
         atol=1e-10,
         rtol=1e-10,
+    )
+
+
+def test_spinquant_rotation_training_exports_loadable_artifact(tmp_path):
+    torch.manual_seed(0)
+    model = _tiny_llama().float()
+    inputs, kwargs = capture_first_layer_inputs(
+        model,
+        tokenizer=None,
+        calibration=[torch.tensor([[1, 2, 3, 4]])],
+        input_device=torch.device("cpu"),
+    )
+    captured, _outputs = capture_spinquant_layer_inputs(
+        model.model.layers[0],
+        inputs,
+        kwargs,
+        device="cpu",
+    )
+    rotations = identity_spinquant_rotations(
+        num_layers=model.config.num_hidden_layers,
+        hidden_size=model.config.hidden_size,
+        head_dim=model.model.layers[0].self_attn.head_dim,
+    )
+    config = SpinQuantTrainingConfig(
+        weight_group_size=4,
+        r1_steps=1,
+        r2_steps=1,
+        batch_size=1,
+        learning_rate=1e-3,
+    )
+    r1, r2, r1_history = train_spinquant_layer_rotations(
+        model.model.layers[0],
+        captured,
+        r1=rotations.R1,
+        r2=rotations.R2[0],
+        config=config,
+        device="cpu",
+        train_r1=True,
+        train_r2=False,
+    )
+    r1, r2, r2_history = train_spinquant_layer_rotations(
+        model.model.layers[0],
+        captured,
+        r1=r1,
+        r2=r2,
+        config=config,
+        device="cpu",
+        train_r1=False,
+        train_r2=True,
+    )
+    assert len(r1_history) == 1
+    assert len(r2_history) == 1
+    assert torch.allclose(r1.t() @ r1, torch.eye(8, dtype=r1.dtype), atol=1e-5)
+    assert torch.allclose(r2.t() @ r2, torch.eye(2, dtype=r2.dtype), atol=1e-5)
+
+    path = tmp_path / "spinquant_R.pt"
+    torch.save(
+        {
+            "R1": r1,
+            "model.layers.0.self_attn.R2": r2,
+            "model.layers.1.self_attn.R2": rotations.R2[1],
+        },
+        path,
+    )
+    loaded = load_spinquant_rotations(
+        path,
+        num_layers=2,
+        hidden_size=8,
+        head_dim=2,
+    )
+    assert torch.equal(loaded.R1, r1)
+    assert torch.equal(loaded.R2[0], r2)
+
+
+def test_spinquant_cross_entropy_training_updates_orthogonal_rotations():
+    torch.manual_seed(0)
+    model = _tiny_llama().float()
+    rotations = identity_spinquant_rotations(
+        num_layers=model.config.num_hidden_layers,
+        hidden_size=model.config.hidden_size,
+        head_dim=model.model.layers[0].self_attn.head_dim,
+    )
+    config = SpinQuantTrainingConfig(
+        weight_group_size=4,
+        r1_steps=1,
+        batch_size=1,
+        learning_rate=1e-4,
+        objective="cross_entropy",
+    )
+    trained, history = train_spinquant_cross_entropy(
+        model,
+        [torch.tensor([[1, 2, 3, 4]])],
+        rotations,
+        config=config,
+        device="cpu",
+    )
+    assert len(history) == 1
+    assert trained.R1.shape == rotations.R1.shape
+    assert trained.R2[0].shape == rotations.R2[0].shape
+    assert torch.allclose(
+        trained.R1.t() @ trained.R1,
+        torch.eye(8, dtype=trained.R1.dtype),
+        atol=1e-5,
+    )
+    assert torch.allclose(
+        trained.R2[0].t() @ trained.R2[0],
+        torch.eye(2, dtype=trained.R2[0].dtype),
+        atol=1e-5,
     )
 
 

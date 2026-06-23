@@ -45,6 +45,13 @@ from .spinquant_quantization_grid import (
     load_spinquant_r4,
     random_spinquant_rotations,
 )
+from .spinquant_training import (
+    SpinQuantTrainingConfig,
+    capture_spinquant_layer_inputs,
+    identity_spinquant_rotations,
+    train_spinquant_cross_entropy,
+    train_spinquant_layer_rotations,
+)
 from .vanilla_quantization_grid import (
     VanillaQuantizationGrid,
     build_asymmetric_vanilla_quantization_grid,
@@ -68,6 +75,11 @@ __all__ = [
     'load_spinquant_rotations',
     'load_spinquant_r4',
     'random_spinquant_rotations',
+    'SpinQuantTrainingConfig',
+    'capture_spinquant_layer_inputs',
+    'identity_spinquant_rotations',
+    'train_spinquant_cross_entropy',
+    'train_spinquant_layer_rotations',
     "AWQQuantizationGrid",
     "FlatQuantDiagQuantizationGrid",
     "apply_flatquant_transforms",

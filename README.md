@@ -104,6 +104,11 @@ methods operate on the exact coordinates consumed by each path. Use
 `--spinquant-rotations-pt` for a learned checkpoint containing `R1` and
 `model.layers.{i}.self_attn.R2`. `--spinquant-random-rotations` exists only for
 pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
+`python -m scripts.train_spinquant` trains repository-native R1/R2 rotation
+artifacts on calibration data with a full fake-quantized model cross-entropy
+objective by default; its defaults match this project's C4/128/2048 setting
+and save a loader-compatible `--spinquant-rotations-pt` file. Use
+`--objective reconstruction` only for the older local linear MSE debug path.
 For non-power-of-two intermediate widths in `spinquant_had`, pass
 `--spinquant-r4-pt` containing the official `had_K` and `K`. Use
 `--activation-bits`, `--v-bits`, and
@@ -463,12 +468,23 @@ or to a dict with optional clipping:
 SpinQuant + RTN with learned rotations:
 
 ```bash
+uv run python -m scripts.train_spinquant \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --out ./outputs/spinquant/llama31_8b_R.pt \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --weight-bits 4 \
+  --weight-group-size 128
+```
+
+```bash
 uv run python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/baselines_llama31_8b \
   --run-name llama31_8b_spinquant_asymmetric_rtn_w3g128_c4n128 \
   --grid spinquant \
-  --spinquant-rotations-pt ./outputs/spinquant/llama31_8b_R.bin \
+  --spinquant-rotations-pt ./outputs/spinquant/llama31_8b_R.pt \
   --scheme asymmetric \
   --assignment rtn \
   --bits 3 \
