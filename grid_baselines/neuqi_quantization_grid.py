@@ -9,8 +9,9 @@ over the scale ``s`` and a floating-point zero-point ``z``.  This module keeps
 the repository's fixed-grid contract: it returns a grid with learned
 ``scale``/``zero_point`` tensors, then assignment methods choose integer codes
 on top of that grid.  The asymmetric variant uses NeUQI's floating zero-point
-solver.  The symmetric variant keeps zero-point fixed at 0 and searches the
-diagonal-Hessian weighted scale/clipping factor on the signed grid.
+solver.  The symmetric variant is a repository extension: it keeps zero-point
+fixed at 0 and searches the diagonal-Hessian weighted scale/clipping factor on
+the signed grid.
 """
 
 from __future__ import annotations
@@ -533,16 +534,21 @@ def build_neuqi_quantization_grid(
 
     ``scheme="asymmetric"`` uses NeUQI's affine uniform quantizer with a
     floating-point zero-point, matching the paper's relaxed formulation.
-    ``scheme="symmetric"`` keeps zero-point fixed at 0 and searches the
-    weighted scale/clipping factor on signed integer codes.
+    ``scheme="symmetric"`` is a repository extension that keeps zero-point
+    fixed at 0 and searches the weighted scale/clipping factor on signed
+    integer codes.  ``group_size=-1`` means one channel-wise group per row.
     """
 
     if weights.dim() != 2:
         raise ValueError(f"expected a 2D weight tensor, got shape {tuple(weights.shape)}")
     if bits <= 0:
         raise ValueError(f"bits must be positive, got {bits}")
-    if group_size <= 0:
-        raise ValueError(f"group_size must be positive, got {group_size}")
+    if group_size == -1:
+        actual_group_size = weights.shape[1]
+    elif group_size > 0:
+        actual_group_size = group_size
+    else:
+        raise ValueError(f"group_size must be positive or -1, got {group_size}")
     if scheme not in {"asymmetric", "symmetric"}:
         raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
     if scheme == "symmetric" and bits < 2:
@@ -563,18 +569,18 @@ def build_neuqi_quantization_grid(
 
     rows, in_features = weights.shape
     device, dtype = weights.device, weights.dtype
-    n_groups = (in_features + group_size - 1) // group_size
-    padded_in = n_groups * group_size
+    n_groups = (in_features + actual_group_size - 1) // actual_group_size
+    padded_in = n_groups * actual_group_size
 
     padded_weights = _pad_weights(weights, padded_in)
     diag_h = _pad_diag(stats.diag_H.detach(), padded_in).to(device=device)
     diag_h = diag_h.clamp_min(0)
     valid_mask = (torch.arange(padded_in, device=device) < in_features).reshape(
         n_groups,
-        group_size,
+        actual_group_size,
     )
 
-    grouped = padded_weights.reshape(rows, n_groups, group_size)
+    grouped = padded_weights.reshape(rows, n_groups, actual_group_size)
     if scheme == "symmetric":
         qmin = -(2 ** (bits - 1))
         qmax = 2 ** (bits - 1) - 1
@@ -607,8 +613,8 @@ def build_neuqi_quantization_grid(
 
     return NeUQIQuantizationGrid(
         float_weights=padded_weights,
-        scale=_expand_group(scale_group.to(dtype=dtype), group_size, padded_in),
-        zero_point=_expand_group(zero_group.to(dtype=dtype), group_size, padded_in),
+        scale=_expand_group(scale_group.to(dtype=dtype), actual_group_size, padded_in),
+        zero_point=_expand_group(zero_group.to(dtype=dtype), actual_group_size, padded_in),
         qmin=qmin,
         qmax=qmax,
         bits=bits,

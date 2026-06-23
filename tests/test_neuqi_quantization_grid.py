@@ -75,6 +75,26 @@ def test_neuqi_uses_floating_zero_points():
     assert torch.any(fractional.abs() > 1e-5)
 
 
+def test_neuqi_group_size_minus_one_is_channelwise():
+    weights = assignment_toy_weights()
+    grid = build_neuqi_quantization_grid(
+        weights,
+        toy_correlated_stats(),
+        bits=2,
+        group_size=-1,
+        scale_candidates=32,
+        coarse_candidates=8,
+        row_chunk_size=1,
+        candidate_chunk_size=4,
+    )
+
+    assert grid.group_size == -1
+    assert grid.in_features == weights.shape[1]
+    assert grid.padded_in_features == weights.shape[1]
+    assert grid.scale.shape == weights.shape
+    assert grid.zero_point.shape == weights.shape
+
+
 def test_neuqi_zero_point_solver_matches_dense_scan():
     weights = assignment_toy_weights()[0]
     scale = torch.tensor(0.4258667)

@@ -34,7 +34,7 @@ flatquant:      online Kronecker activation transforms with transformed weights
 flatquant_diag: symmetric and asymmetric per-channel scale/clipping ablation
 spinquant: learned or random no-had R1/R2, then symmetric/asymmetric grid
 spinquant_had: R1/R2 plus online R3/R4 for low-bit activation/K-cache
-neuqi: Hessian-diagonal weighted grid initialization, symmetric and asymmetric
+neuqi: Hessian-diagonal weighted grid initialization, asymmetric plus symmetric extension
 ```
 
 Assignment methods:
@@ -122,7 +122,14 @@ calibration inputs and searches scale with the paper defaults `T=2048`,
 paper's transition-point search: Algorithm 3 on the Eq. 8 approximation
 followed by Algorithm 4 on Eq. 7 in the local interval. The symmetric variant
 keeps zero-point fixed at 0 and searches the weighted scale/clipping factor on
-signed integer codes.
+signed integer codes; this is a repository extension, not the primary paper or
+official-implementation path. `--group-size -1` is supported for NeUQI and
+means one channel-wise group per output row, matching the official
+implementation's `group_size=-1` behavior. The whole-model runner quantizes
+layers sequentially so later layer statistics are collected after earlier
+layers have been quantized, but the exact official NeUQI path is still
+different because this repository does not implement or use the official LDLQ
+assignment.
 
 ```python
 from assignment_methods import GPTAQAssignment, stats_from_paired_inputs
@@ -517,6 +524,8 @@ uv run python -m scripts.run_quantization_baseline \
   --n-calib 128 \
   --seqlen 2048
 ```
+
+Use `--group-size -1` for the official channel-wise NeUQI grid shape.
 
 Minimal AWQ FlexRound smoke run using the generated asymmetric AWQ scales:
 
