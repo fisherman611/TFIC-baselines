@@ -72,7 +72,7 @@ def parse_args():
     parser.add_argument("--model-path", default="meta-llama/Meta-Llama-3.1-8B")
     parser.add_argument("--out", default=None)
     parser.add_argument("--output-dir", default="./outputs/spinquant")
-    parser.add_argument("--weight-bits", type=int, default=4, choices=[4, 8, 16])
+    parser.add_argument("--weight-bits", type=int, default=3, choices=[3, 4, 8, 16])
     parser.add_argument("--weight-group-size", type=int, default=128)
     parser.add_argument(
         "--weight-scheme",

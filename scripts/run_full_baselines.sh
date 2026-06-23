@@ -51,7 +51,7 @@ MODEL_DEVICE_MAP=${MODEL_DEVICE_MAP:-auto}
 INPUT_DEVICE=${INPUT_DEVICE:-auto}
 STATS_DEVICE=${STATS_DEVICE:-layer}
 
-GRIDS=${GRIDS:-"vanilla awq"}
+GRIDS=${GRIDS:-"vanilla awq flatquant spinquant_had neuqi"}
 SCHEMES=${SCHEMES:-"asymmetric symmetric"}
 ASSIGNMENTS=${ASSIGNMENTS:-"rtn gptq gptaq gptaq_rescomp flexround tfic"}
 
@@ -196,7 +196,7 @@ for GRID in $GRIDS; do
           )
         else
           echo
-          echo "!!! skipping grid=spinquant scheme=$SCHEME because no SpinQuant rotations are set"
+          echo "!!! skipping grid=$GRID scheme=$SCHEME because no SpinQuant rotations are set"
           echo "!!! set SPINQUANT_ROTATIONS_PT, or SPINQUANT_RANDOM_ROTATIONS=1 for smoke/debug runs"
           continue
         fi

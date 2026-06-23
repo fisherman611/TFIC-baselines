@@ -46,7 +46,7 @@ else
   AUTO_GENERATE_AWQ_SCALES=${AUTO_GENERATE_AWQ_SCALES:-0}
 fi
 
-GRIDS=${GRIDS:-"vanilla awq flatquant_diag spinquant neuqi"}
+GRIDS=${GRIDS:-"vanilla awq flatquant spinquant_had neuqi"}
 SCHEMES=${SCHEMES:-"asymmetric symmetric"}
 METHODS=${METHODS:-"rtn gptq gptaq gptaq_rescomp flexround tfic"}
 
@@ -208,7 +208,7 @@ for GRID in $GRIDS; do
       if [[ -n "$SPINQUANT_ROTATIONS_PT" ]]; then
         if [[ ! -f "$SPINQUANT_ROTATIONS_PT" ]]; then
           echo
-          echo "!!! skipping grid=spinquant scheme=$SCHEME because SpinQuant rotations are missing: $SPINQUANT_ROTATIONS_PT"
+          echo "!!! skipping grid=$GRID scheme=$SCHEME because SpinQuant rotations are missing: $SPINQUANT_ROTATIONS_PT"
           SKIPS=$((SKIPS + 1))
           continue
         fi
@@ -217,7 +217,7 @@ for GRID in $GRIDS; do
         GRID_ARGS+=(--spinquant-random-rotations --spinquant-random-seed "$SPINQUANT_RANDOM_SEED")
       else
         echo
-        echo "!!! skipping grid=spinquant scheme=$SCHEME because no SpinQuant rotations are set"
+        echo "!!! skipping grid=$GRID scheme=$SCHEME because no SpinQuant rotations are set"
         echo "!!! set SPINQUANT_ROTATIONS_PT, or SPINQUANT_RANDOM_ROTATIONS=1 for smoke/debug runs"
         SKIPS=$((SKIPS + 1))
         continue
