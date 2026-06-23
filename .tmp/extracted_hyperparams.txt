@@ -1,0 +1,28 @@
+=== awq.md ===
+
+=== eigenflip.md ===
+- `--layer-batch-size` theo encoder de tranh OOM (moi Gram dxd fp64 o Llama-3 8B: hidden 4096 -> 134 MB, MLP 14336 -> 1.6 GB): - none / clc: 16 (khong ton -- bi override thanh "hook het" anyway) - eigenflip / eigenflip_solve: 8 - gptq / shr_*: 4 `--eig-on-cpu`
+- ``` 1. Load model + tokenizer + calib (C4, return_tensors=True -> giu full seqlen) 2. enc = build_encoder(--encoder)        ; need_H, keep_sigma suy ra tu encoder 3. collect_and_encode_awq_style(...):    voi moi batch layer:      a. hook -> calib 1 pass -> stream stat (mean hoac Gram)      b. moi layer: stat -> LayerStats -> callback:           base_state = from_rtn(W) hoac from_awq(W, scale)           corrected  = enc.apply(base_state, stats)   <- QUANTIZE O DAY           module.weight.data = corrected               <- ghi de weight 4. save model -> output-dir/<base>_<encoder>/ ```
+- ```bash PYTHONPATH=. python eigenflip/run_fast.py \   --model-path /path/to/Meta-Llama-3.1-8B \   --base rtn --encoder eigenflip_solve --k 16 \   --bits 3 --group-size 128 \   --calib-dataset c4 --n-calib 128 --seqlen 2048 \   --layer-batch-size 8 \   --output-dir ./quantized_models/ll31_3bit ```
+
+=== flatquant.md ===
+
+=== flexround.md ===
+- FlexRound: Learnable Rounding based on Element-wise Division for Post-Training Quantization J. GPT-2 on WebNLG In Table 6, we utilize the GPT-2 models and the WebNLG dataset available from the LoRA repository 18 . Namely, all LoRA checkpoints are loaded from the repository and merged to GPT-2. For reconstruction in all experiments, we use 128 random samples from the training dataset of WebNLG without any modification, and the number of iterations and the batch size are set to 500 and 8 respectively. For ‘Q + FlexRound’, the learning rate is set to 5 e- 3 for GPT-2 medium and 3 e- 3 for GPT-2 large, respectively. The other experimental setup of ‘Q + AdaRound’ follows Wei et al. (2022). 18 https://github.com/microsoft/LoRA 23
+- FlexRound: Learnable Rounding based on Element-wise Division for Post-Training Quantization 3 e- 4 for LLaMA- 7 B and LLaMA- 13 B, and 2 and 3 e- 4 for LLaMA- 33 B. For the experiments of ‘B + FlexRound’ with 3 -bit weight quantization on PTB in Table 24, the batch size and the learning rate are set to 4 and 7 e- 4 for LLaMA- 7 B, 4 and 6 e- 4 for LLaMA- 13 B, and 2 and 6 e- 4 for LLaMA- 33 B. The probability of dropping activation quantization is set to 0 . 5 in the QDrop’s setting. The other experimental setups of ‘B + AdaRound’ and ‘Q + AdaRound’ follow Li et al. (2021) and Wei et al. (2022), respectively. 27
+
+=== gptaq.md ===
+
+=== gptaq_rescomp.md ===
+
+=== gptq.md ===
+
+=== neuqi.md ===
+- NeUQI: Near-Optimal Uniform Quantization Parameter Initialization for Low-Bit LLMs Algorithm 4 Optimal Zero-point over Eq. 7 in Limited Interval Input Samples { x i } n i =1 , sample-wise weights { h i } n i =1 , bit-width k , interval [ z S − 1 , z S + 1] Initialize transition list T ← [ ] for each sample x i do j 1 = ⌈ z S − 1 + x i − 1 2 ⌉ t 1 = j 1 + 1 2 − x i { First possible transition point in [ z S − 1 , z S + 1) } δ 1 ( z ) ← h i ( x i + z − ( j 1 + 1)) 2 − h i ( x i + z − j 1 ) 2 if 0 ≤ j 1 < 2 k − 1 then Add ( t 1 , δ 1 ( z )) to T end if j 2 = j 1 + 1 t 2 = j 2 + 1 2 − x i { Second possible transition point in [ z S − 1 , z S + 1) } δ 2 ( z ) ← h i ( x i + z − ( j 2 + 1)) 2 − h i ( x i + z − j 2 ) 2 if 0 ≤ j 2 < 2 k − 1 then Add ( t 2 , δ 2 ( z )) to T end if { Since ( ⌈ z S − 1 + x i − 1 2 ⌉ + 2) + 1 2 − x i ≥ z S + 1 , there are at most two transition points in the interval [ z S − 1 , , z S + 1) . } end for Sort T by transition point t L I ( z ) ← P i h i  x i + z − clip( ⌊ x i + z S − 1 ⌉ , 0 , 2 k − 1)  2 ( t first , δ first ) ← first element of T z ′ ← arg min z ∈ [ z S − 1 , t first ] L I ( z ) ( z ∗ , L ∗ ) ← ( z ′ , L I ( z ′ )) for each ( t, δ ( z )) in T do L I ( z ) ← L I ( z ) + δ ( z ) Let next transition point be t ′ (or z S + 1 if none) { Consider the value at z S + 1 } z ′ ← arg min z ∈ [ t,t ′ ] L I ( z ) update ( z ∗ , L ∗ ) with ( z ′ , L I ( z ′ )) if L I ( z ′ ) < L ∗ end for Return z ∗ 14
+
+=== rtn.md ===
+
+=== spinquant.md ===
+
+=== tfic.md ===
+
