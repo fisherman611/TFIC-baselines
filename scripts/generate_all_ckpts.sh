@@ -13,6 +13,9 @@ MODEL_TAG=${MODEL_TAG:-"llama31_8b"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./quantized_models/artifacts_${MODEL_TAG}"}
 LOG_DIR=${LOG_DIR:-"./logs"}
 
+# Limit execution to GPU 1
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+
 # Hyperparameters
 BITS=${BITS:-3}
 ACTIVATION_BITS=${ACTIVATION_BITS:-16}
