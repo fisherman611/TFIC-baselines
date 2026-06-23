@@ -9,13 +9,16 @@ The script saves a Hugging Face checkpoint under:
 
     <output-dir>/<grid>_<scheme>_<assignment>
 
-Evaluate the saved checkpoint with ``eval_ppl.py`` or ``lm_eval_runner.py``.
+Evaluate the saved checkpoint with ``scripts.eval_ppl`` or
+``scripts.lm_eval_runner``.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -31,18 +34,34 @@ from assignment_methods import (
 from eigenflip.quantization.awq_scales import scales_from_awq_run
 from eigenflip.statistics.collect_fast import collect_and_encode_awq_style
 from grid_baselines import (
+    apply_flatquant_attention_transforms,
+    add_spinquant_k_cache_quantization,
+    add_spinquant_activation_quantization,
+    apply_flatquant_transforms,
     apply_spinquant_no_had,
     build_awq_quantization_grid,
     build_flatquant_diag_quantization_grid,
     build_neuqi_quantization_grid,
     build_spinquant_quantization_grid,
     build_vanilla_quantization_grid,
+    load_flatquant_transforms,
+    load_flatquant_attention_clips,
+    load_flatquant_attention_transforms,
     load_spinquant_rotations,
     random_spinquant_rotations,
+    serialize_flatquant_transforms,
 )
+from grid_baselines.spinquant_quantization_grid import (
+    apply_spinquant_r4,
+    load_spinquant_r4,
+)
+from baseline_utils.model_loading import TRANSFORM_MANIFEST
 
 try:
-    from calibration_utils import get_c4_calibration_data, get_wikitext2_calibration_data
+    from baseline_utils.calibration import (
+        get_c4_calibration_data,
+        get_wikitext2_calibration_data,
+    )
 except ImportError:
     get_c4_calibration_data = get_wikitext2_calibration_data = None
 
@@ -200,16 +219,21 @@ def build_grid(
             group_size=args.group_size,
             scheme=args.scheme,
         )
-    if name == "flatquant_diag":
+    if name in {"flatquant", "flatquant_diag"}:
         if flatquant_diag_params is None:
-            raise ValueError("FlatQuant diag grid requires per-layer scale params")
+            raise ValueError("FlatQuant grid requires per-layer params")
         return build_flatquant_diag_quantization_grid(
             weights,
-            flatquant_diag_params["scales"],
+            flatquant_diag_params.get(
+                "scales",
+                torch.ones(weights.shape[1], device=weights.device),
+            ),
             bits=args.bits,
             group_size=args.group_size,
             scheme=args.scheme,
             weight_clip=flatquant_diag_params.get("weight_clip", 1.0),
+            weight_clip_max=flatquant_diag_params.get("weight_clip_max"),
+            weight_clip_min=flatquant_diag_params.get("weight_clip_min"),
         )
     if name == "neuqi":
         if stats is None:
@@ -225,7 +249,7 @@ def build_grid(
             row_chunk_size=args.neuqi_row_chunk_size,
             candidate_chunk_size=args.neuqi_candidate_chunk_size,
         )
-    if name == 'spinquant':
+    if name in {'spinquant', 'spinquant_had'}:
         return build_spinquant_quantization_grid(
             weights,
             bits=args.bits,
@@ -237,7 +261,7 @@ def build_grid(
 
 def load_calibration(tokenizer, args):
     if get_c4_calibration_data is None:
-        raise RuntimeError("calibration_utils.py is not importable")
+        raise RuntimeError("baseline_utils.calibration is not importable")
     if args.calib_dataset == "c4":
         return get_c4_calibration_data(
             tokenizer,
@@ -261,6 +285,19 @@ def output_path(args) -> str:
     return os.path.join(args.output_dir, run_name)
 
 
+def transform_model_metadata(model) -> dict[str, int | str]:
+    attention = model.model.layers[0].self_attn
+    return {
+        "model_type": str(model.config.model_type),
+        "hidden_size": int(model.config.hidden_size),
+        "intermediate_size": int(model.config.intermediate_size),
+        "num_hidden_layers": int(model.config.num_hidden_layers),
+        "num_attention_heads": int(model.config.num_attention_heads),
+        "num_key_value_heads": int(model.config.num_key_value_heads),
+        "head_dim": int(attention.head_dim),
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Quantize a real HF model using grid_baselines + assignment_methods."
@@ -276,7 +313,15 @@ def parse_args():
 
     parser.add_argument(
         '--grid',
-        choices=['vanilla', 'awq', 'flatquant_diag', 'spinquant', 'neuqi'],
+        choices=[
+            'vanilla',
+            'awq',
+            'flatquant',
+            'flatquant_diag',
+            'spinquant',
+            'spinquant_had',
+            'neuqi',
+        ],
         required=True,
     )
     parser.add_argument("--assignment", choices=sorted(NEED_H), required=True)
@@ -293,6 +338,22 @@ def parse_args():
             "'weight_clip': scalar}}."
         ),
     )
+    parser.add_argument(
+        "--flatquant-transforms-pt",
+        default=None,
+        help=(
+            "Normalized full FlatQuant per-linear Kronecker transforms. "
+            "Required by --grid flatquant."
+        ),
+    )
+    parser.add_argument("--activation-bits", type=int, default=16, choices=[4, 8, 16])
+    parser.add_argument(
+        "--activation-symmetric",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--activation-group-size", type=int, default=-1)
+    parser.add_argument("--activation-clip-ratio", type=float, default=1.0)
 
     parser.add_argument(
         '--spinquant-rotations-pt',
@@ -308,6 +369,37 @@ def parse_args():
         default='float64',
         help='Compute dtype used while absorbing SpinQuant rotations.',
     )
+    parser.add_argument(
+        '--spinquant-r4-pt',
+        default=None,
+        help=(
+            'Factorized R4 artifact with had_K and K from official get_hadK. '
+            'Required when intermediate_size is not a power of two.'
+        ),
+    )
+    parser.add_argument('--v-bits', type=int, default=16, choices=[4, 8, 16])
+    parser.add_argument(
+        '--v-symmetric',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument('--v-clip-ratio', type=float, default=1.0)
+    parser.add_argument('--k-bits', type=int, default=16, choices=[4, 8, 16])
+    parser.add_argument(
+        '--k-symmetric',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument('--k-group-size', type=int, default=-1)
+    parser.add_argument('--k-clip-ratio', type=float, default=1.0)
+    parser.add_argument('--q-bits', type=int, default=16, choices=[4, 8, 16])
+    parser.add_argument(
+        '--q-symmetric',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument('--q-group-size', type=int, default=-1)
+    parser.add_argument('--q-clip-ratio', type=float, default=1.0)
     parser.add_argument(
         '--spinquant-random-rotations',
         action='store_true',
@@ -440,7 +532,52 @@ def main():
             target_device = input_device
         model.to(target_device)
 
-    if args.grid == 'spinquant':
+    flatquant_transforms = {}
+    flatquant_clips = {}
+    flatquant_attention_transforms = {}
+    flatquant_attention_clips = {}
+    if args.grid == "flatquant":
+        if not args.flatquant_transforms_pt:
+            raise ValueError(
+                "--grid flatquant requires --flatquant-transforms-pt"
+            )
+        flatquant_transforms, flatquant_clips = load_flatquant_transforms(
+            args.flatquant_transforms_pt
+        )
+        flatquant_attention_transforms = load_flatquant_attention_transforms(
+            args.flatquant_transforms_pt
+        )
+        flatquant_attention_clips = load_flatquant_attention_clips(
+            args.flatquant_transforms_pt
+        )
+        apply_flatquant_transforms(
+            model,
+            flatquant_transforms,
+            activation_bits=args.activation_bits,
+            activation_symmetric=args.activation_symmetric,
+            activation_group_size=args.activation_group_size,
+            activation_clip_ratio=args.activation_clip_ratio,
+            clips=flatquant_clips,
+        )
+        apply_flatquant_attention_transforms(
+            model,
+            flatquant_attention_transforms,
+            q_bits=args.q_bits,
+            k_bits=args.k_bits,
+            v_bits=args.v_bits,
+            q_symmetric=args.q_symmetric,
+            k_symmetric=args.k_symmetric,
+            v_symmetric=args.v_symmetric,
+            q_group_size=args.q_group_size,
+            k_group_size=args.k_group_size,
+            q_clip_ratio=args.q_clip_ratio,
+            k_clip_ratio=args.k_clip_ratio,
+            v_clip_ratio=args.v_clip_ratio,
+            clips=flatquant_attention_clips,
+        )
+
+    spinquant_r4 = None
+    if args.grid in {'spinquant', 'spinquant_had'}:
         if args.spinquant_rotations_pt and args.spinquant_random_rotations:
             raise ValueError(
                 'use either --spinquant-rotations-pt or '
@@ -448,10 +585,10 @@ def main():
             )
         if not args.spinquant_rotations_pt and not args.spinquant_random_rotations:
             raise ValueError(
-                '--grid spinquant requires --spinquant-rotations-pt or '
+                f'--grid {args.grid} requires --spinquant-rotations-pt or '
                 '--spinquant-random-rotations'
             )
-        head_dim = model.config.hidden_size // model.config.num_attention_heads
+        head_dim = int(model.model.layers[0].self_attn.head_dim)
         if args.spinquant_random_rotations:
             rotations = random_spinquant_rotations(
                 num_layers=model.config.num_hidden_layers,
@@ -477,13 +614,54 @@ def main():
             rotations,
             work_dtype=work_dtype,
         )
+        if args.grid == 'spinquant_had':
+            if args.spinquant_r4_pt:
+                spinquant_r4 = load_spinquant_r4(
+                    args.spinquant_r4_pt,
+                    width=model.config.intermediate_size,
+                )
+            spinquant_r4 = apply_spinquant_r4(model, spinquant_r4)
+        elif args.spinquant_r4_pt:
+            raise ValueError(
+                '--spinquant-r4-pt is only valid with --grid spinquant_had'
+            )
+        if args.grid == 'spinquant' and args.k_bits < 16:
+            raise ValueError(
+                'K-cache quantization requires --grid spinquant_had because '
+                'the post-RoPE R3 transform is online'
+            )
+        add_spinquant_activation_quantization(
+            model,
+            bits=args.activation_bits,
+            symmetric=args.activation_symmetric,
+            group_size=args.activation_group_size,
+            clip_ratio=args.activation_clip_ratio,
+            v_bits=args.v_bits,
+            v_symmetric=args.v_symmetric,
+            v_clip_ratio=args.v_clip_ratio,
+        )
+        if args.grid == 'spinquant_had':
+            add_spinquant_k_cache_quantization(
+                model,
+                bits=args.k_bits,
+                symmetric=args.k_symmetric,
+                group_size=args.k_group_size,
+                clip_ratio=args.k_clip_ratio,
+            )
 
     calibration = load_calibration(tokenizer, args)
     awq_scales_by_layer = load_awq_scales(args.awq_scales_pt) if args.grid == "awq" else {}
     flatquant_diag_by_layer = (
         load_flatquant_diag_params(args.flatquant_params_pt)
         if args.grid == "flatquant_diag"
-        else {}
+        else (
+            {
+                name: dict(flatquant_clips.get(name, {}))
+                for name in flatquant_transforms
+            }
+            if args.grid == "flatquant"
+            else {}
+        )
     )
     assignment = build_assignment(args.assignment, args)
 
@@ -506,7 +684,7 @@ def main():
             if layer_awq_scales is None:
                 raise KeyError(f"no AWQ scales for layer {layer_name!r}")
         layer_flatquant_diag_params = None
-        if args.grid == "flatquant_diag":
+        if args.grid in {"flatquant", "flatquant_diag"}:
             layer_flatquant_diag_params = flatquant_diag_by_layer.get(layer_name)
             if layer_flatquant_diag_params is None:
                 raise KeyError(f"no FlatQuant diag params for layer {layer_name!r}")
@@ -571,6 +749,90 @@ def main():
     os.makedirs(out, exist_ok=True)
     model.save_pretrained(out)
     tokenizer.save_pretrained(out)
+    if args.grid == "flatquant":
+        transform_file = "flatquant_transforms.pt"
+        torch.save(
+            {
+                "layers": serialize_flatquant_transforms(
+                    flatquant_transforms,
+                    flatquant_clips,
+                ),
+                "attention": {
+                    name: matrix.detach().cpu()
+                    for name, matrix in flatquant_attention_transforms.items()
+                },
+                "attention_clips": {
+                    name: {
+                        key: value.detach().cpu()
+                        for key, value in values.items()
+                    }
+                    for name, values in flatquant_attention_clips.items()
+                },
+            },
+            Path(out) / transform_file,
+        )
+        manifest = {
+            "version": 1,
+            "method": "flatquant",
+            "model": transform_model_metadata(model),
+            "transform_file": transform_file,
+            "activation_bits": args.activation_bits,
+            "activation_symmetric": args.activation_symmetric,
+            "activation_group_size": args.activation_group_size,
+            "activation_clip_ratio": args.activation_clip_ratio,
+            "q_bits": args.q_bits,
+            "q_symmetric": args.q_symmetric,
+            "q_group_size": args.q_group_size,
+            "q_clip_ratio": args.q_clip_ratio,
+            "k_bits": args.k_bits,
+            "k_symmetric": args.k_symmetric,
+            "k_group_size": args.k_group_size,
+            "k_clip_ratio": args.k_clip_ratio,
+            "v_bits": args.v_bits,
+            "v_symmetric": args.v_symmetric,
+            "v_clip_ratio": args.v_clip_ratio,
+        }
+        (Path(out) / TRANSFORM_MANIFEST).write_text(
+            json.dumps(manifest, indent=2),
+            encoding="utf-8",
+        )
+    elif args.grid in {"spinquant", "spinquant_had"}:
+        manifest = {
+            "version": 1,
+            "method": (
+                "spinquant_had"
+                if args.grid == "spinquant_had"
+                else "spinquant_no_had"
+            ),
+            "model": transform_model_metadata(model),
+            "activation_bits": args.activation_bits,
+            "activation_symmetric": args.activation_symmetric,
+            "activation_group_size": args.activation_group_size,
+            "activation_clip_ratio": args.activation_clip_ratio,
+            "v_bits": args.v_bits,
+            "v_symmetric": args.v_symmetric,
+            "v_clip_ratio": args.v_clip_ratio,
+            "k_bits": args.k_bits,
+            "k_symmetric": args.k_symmetric,
+            "k_group_size": args.k_group_size,
+            "k_clip_ratio": args.k_clip_ratio,
+        }
+        if args.grid == "spinquant_had":
+            runtime_file = "spinquant_runtime.pt"
+            torch.save(
+                {
+                    "r4": {
+                        "K": spinquant_r4.k,
+                        "had_K": spinquant_r4.had_k,
+                    }
+                },
+                Path(out) / runtime_file,
+            )
+            manifest["runtime_file"] = runtime_file
+        (Path(out) / TRANSFORM_MANIFEST).write_text(
+            json.dumps(manifest, indent=2),
+            encoding="utf-8",
+        )
     print(f"saved -> {out}")
 
 

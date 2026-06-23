@@ -9,8 +9,8 @@ This is the standard GPTQ/AWQ-style harness so numbers are comparable to the
 literature. Lower is better.
 
 Usage:
-  python eval_ppl.py --model-path ./quantized_models/ablate/c1c_gated_p2_w3g128
-  python eval_ppl.py --model-path <dir> --datasets wikitext2 c4 --seqlen 2048
+  python -m scripts.eval_ppl --model-path ./quantized_models/ablate/c1c_gated_p2_w3g128
+  python -m scripts.eval_ppl --model-path <dir> --datasets wikitext2 c4 --seqlen 2048
 
 Outputs a JSON next to the checkpoint (ppl.json) and prints a one-line summary.
 """
@@ -27,8 +27,13 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from eigenflip.statistics.collect_fast import _resolve_input_device
-from runtime_utils import load_runtime_env
-from wandb_utils import collect_ppl_wandb_metrics, log_to_wandb, wandb_enabled_from_env
+from baseline_utils.runtime import load_runtime_env
+from baseline_utils.model_loading import load_transform_aware_model
+from baseline_utils.wandb import (
+    collect_ppl_wandb_metrics,
+    log_to_wandb,
+    wandb_enabled_from_env,
+)
 
 
 # --------------------------------------------------------------------------
@@ -212,7 +217,7 @@ def main():
     p.add_argument("--input-device", default=os.getenv("INPUT_DEVICE", "auto"))
     args = p.parse_args()
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
     print("=" * 70)
     print("Perplexity eval | model:", args.model_path)
@@ -224,9 +229,12 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     device_map = None if args.device_map.lower() == "none" else args.device_map
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path, torch_dtype=torch.bfloat16,
-        device_map=device_map, trust_remote_code=True)
+    model = load_transform_aware_model(
+        args.model_path,
+        torch_dtype=torch.bfloat16,
+        device_map=device_map,
+        trust_remote_code=True,
+    )
     model.eval()
     if device_map is None:
         if args.input_device == "auto":

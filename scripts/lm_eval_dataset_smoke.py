@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from lm_eval_runner import LMEvalHarnessRunner
+from scripts.lm_eval_runner import LMEvalHarnessRunner
 
 
 def main():

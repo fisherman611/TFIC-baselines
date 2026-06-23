@@ -21,7 +21,12 @@ def state_from_grid(
     unchanged because ``(q + shift) - (z + shift) == q - z``.
     """
     integer_weights = grid.quantize()
-    pre_round = grid.float_weights / grid.scale + grid.zero_point
+    pre_round_fn = getattr(grid, "pre_round_values", None)
+    pre_round = (
+        pre_round_fn()
+        if callable(pre_round_fn)
+        else grid.float_weights / grid.scale + grid.zero_point
+    )
     zero_point = grid.zero_point
     min_int = grid.qmin
     max_int = grid.qmax

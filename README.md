@@ -2,24 +2,26 @@
 
 This repository contains post-training quantization baselines for studying:
 
-- quantization grids / transforms: Vanilla, AWQ, NeUQI, the FlatQuant
-  diagonal-scale ablation grid, and SpinQuant no-had rotation absorption are implemented
+- quantization grids / transforms: Vanilla, AWQ, NeUQI, FlatQuant affine
+  transforms, the FlatQuant diagonal ablation, and SpinQuant are implemented
 - assignment methods: RTN, GPTQ, GPTAQ, GPTAQ+ResComp, fixed-grid FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
 
-The current modular pipeline is:
+Repository layout:
 
 ```text
-grid_baselines/         build the quantization grid
-assignment_methods/     assign integer codes on that grid
-run_quantization_baseline.py
-                         run one real-model grid x assignment experiment
-run_full_baselines.sh   orchestrate full experiments
-generate_awq_scales.py  generate AWQ per-layer scales
-eval_ppl.py             evaluate WikiText2 / C4 perplexity
-lm_eval_runner.py       run lm-evaluation-harness
-log_wandb_results.py    log saved PPL/lm-eval JSON files to W&B
+assignment_methods/       integer-code assignment algorithms
+baseline_utils/           shared calibration, runtime, and W&B utilities
+eigenflip/                EigenFlip/TFIC implementation
+grid_baselines/           quantization-grid implementations
+scripts/                  Python and shell entry points
+tests/                    automated tests
+docs/methods/             method notes and research documentation
+docs/plans/               implementation plans
+experiments/legacy/       archived exploratory code
 ```
+
+Detailed notes are indexed in [docs/README.md](docs/README.md).
 
 ## Implemented Methods
 
@@ -28,8 +30,10 @@ Grid baselines:
 ```text
 vanilla: symmetric and asymmetric
 awq:     symmetric and asymmetric
-flatquant_diag: symmetric and asymmetric per-channel scale/clipping grid
-spinquant: learned or random no-had R1/R2 rotation absorption, then symmetric/asymmetric grid
+flatquant:      online Kronecker activation transforms with transformed weights
+flatquant_diag: symmetric and asymmetric per-channel scale/clipping ablation
+spinquant: learned or random no-had R1/R2, then symmetric/asymmetric grid
+spinquant_had: R1/R2 plus online R3/R4 for low-bit activation/K-cache
 neuqi: Hessian-diagonal weighted grid initialization, symmetric and asymmetric
 ```
 
@@ -70,22 +74,33 @@ The default residual scale follows the reference implementation
 (`rescomp_alpha=0.25`), with 2-bit using the original GPTAQ-style update and
 3-bit or higher using ResComp's `allw` update.
 
-`flatquant_diag` is implemented as a fixed-grid-compatible ablation of
-FlatQuant: the learned pair-wise per-channel scale `c` and optional learned
-weight clipping threshold `alpha_w`. It consumes params produced elsewhere
-through `--flatquant-params-pt`. This is not the full FlatQuant baseline from
-the official repo. Full FlatQuant's non-diagonal Kronecker affine transforms
-require online activation/KV-cache transforms and model reparameterization, so
-they must be integrated at the model-forward level before assignment methods
-can be applied correctly.
+`flatquant` implements the paper's central affine relation
+`Q(XP) Q(P^-1 W^T)` for normalized per-linear Kronecker transform artifacts.
+Weights are stored in transformed coordinates, activations are transformed
+online, and assignment statistics are collected after that transform. Official
+`kcache_trans` matrices are applied to Q/K after RoPE, with optional Q/K/V
+cache fake quantization. The saved manifest restores the online path in PPL
+and lm-eval.
 
-`spinquant` implements the SpinQuant no-had inference path for LLaMA/Mistral-
-style models: it fuses RMSNorm scales, absorbs learned residual rotation `R1`
-and per-layer value/output-head rotation `R2`, then applies the selected
-assignment method to the ordinary uniform weight grid. Use
+`flatquant_diag` remains a fixed-grid-compatible ablation of FlatQuant: the
+learned pair-wise per-channel scale `c` and optional learned weight clipping
+threshold `alpha_w`. It consumes params produced elsewhere through
+`--flatquant-params-pt`. Use `flatquant` for the non-diagonal Kronecker model
+path.
+
+`spinquant` is the project-default no-had path: it fuses RMSNorm scales and
+absorbs learned residual rotation `R1` plus per-layer value/output-head
+rotation `R2`. `spinquant_had` additionally applies factorized online `R4` to
+the MLP down projection and post-RoPE `R3` for K-cache quantization. Assignment
+methods operate on the exact coordinates consumed by each path. Use
 `--spinquant-rotations-pt` for a learned checkpoint containing `R1` and
 `model.layers.{i}.self_attn.R2`. `--spinquant-random-rotations` exists only for
 pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
+For non-power-of-two intermediate widths in `spinquant_had`, pass
+`--spinquant-r4-pt` containing the official `had_K` and `K`. Use
+`--activation-bits`, `--v-bits`, and
+`--k-bits` for A/V/K fake quantization. Runtime transforms and quantizer
+settings are restored from the saved checkpoint manifest during evaluation.
 
 `neuqi` initializes a uniform grid by minimizing the diagonal-Hessian weighted
 reconstruction loss from NeUQI. It uses `stats.diag_H` collected from
@@ -162,14 +177,14 @@ skips downstream `lm-eval`:
 
 ```bash
 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0 \
-  uv run bash run_full_baselines.sh
+  uv run bash scripts/run_full_baselines.sh
 ```
 
-`run_full_baselines.sh` logs to W&B by default. To disable W&B for a debug run:
+`scripts/run_full_baselines.sh` logs to W&B by default. To disable W&B for a debug run:
 
 ```bash
 RUN_WANDB=0 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="rtn" RUN_LM_EVAL=0 \
-  uv run bash run_full_baselines.sh
+  uv run bash scripts/run_full_baselines.sh
 ```
 
 ## Run Vanilla Baselines
@@ -178,13 +193,13 @@ Run all implemented assignment methods on the Vanilla grid:
 
 ```bash
 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
-  uv run bash run_full_baselines.sh
+  uv run bash scripts/run_full_baselines.sh
 ```
 
 Each cell runs:
 
 ```text
-1. quantization with run_quantization_baseline.py
+1. quantization with `python -m scripts.run_quantization_baseline`
 2. PPL eval on WikiText2 test and C4 validation
 3. lm-eval with the extended task preset
 ```
@@ -196,7 +211,7 @@ AWQ requires per-layer scales before running the AWQ grid.
 Asymmetric AWQ scales:
 
 ```bash
-uv run python generate_awq_scales.py \
+uv run python -m scripts.generate_awq_scales \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --scheme asymmetric \
   --bits 3 \
@@ -210,7 +225,7 @@ uv run python generate_awq_scales.py \
 Symmetric AWQ scales:
 
 ```bash
-uv run python generate_awq_scales.py \
+uv run python -m scripts.generate_awq_scales \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --scheme symmetric \
   --bits 3 \
@@ -229,7 +244,7 @@ Run AWQ asymmetric and symmetric:
 AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
 AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
 GRIDS="awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
-  uv run bash run_full_baselines.sh
+  uv run bash scripts/run_full_baselines.sh
 ```
 
 Run both Vanilla and AWQ:
@@ -238,7 +253,7 @@ Run both Vanilla and AWQ:
 AWQ_SCALES_PT_ASYMMETRIC=./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c4n128.pt \
 AWQ_SCALES_PT_SYMMETRIC=./outputs/awq_scales/llama31_8b_awq_sym_w3g128_c4n128.pt \
 GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
-  uv run bash run_full_baselines.sh
+  uv run bash scripts/run_full_baselines.sh
 ```
 
 ## Multi-GPU Runs
@@ -260,7 +275,7 @@ MODEL_DEVICE_MAP=auto \
 INPUT_DEVICE=auto \
 STATS_DEVICE=layer \
 GRIDS="vanilla" SCHEMES="asymmetric" ASSIGNMENTS="gptq tfic" \
-uv run bash run_full_baselines.sh
+uv run bash scripts/run_full_baselines.sh
 ```
 
 Recommended 4-GPU run:
@@ -271,18 +286,18 @@ MODEL_DEVICE_MAP=balanced \
 INPUT_DEVICE=auto \
 STATS_DEVICE=layer \
 GRIDS="vanilla awq" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
-uv run bash run_full_baselines.sh
+uv run bash scripts/run_full_baselines.sh
 ```
 
 For lower GPU memory at the cost of speed:
 
 ```bash
-STATS_DEVICE=cpu uv run bash run_full_baselines.sh
+STATS_DEVICE=cpu uv run bash scripts/run_full_baselines.sh
 ```
 
 ## Outputs
 
-By default, `run_full_baselines.sh` uses:
+By default, `scripts/run_full_baselines.sh` uses:
 
 ```text
 MODEL_PATH=meta-llama/Meta-Llama-3.1-8B
@@ -301,15 +316,35 @@ To save disk after each cell is evaluated:
 
 ```bash
 DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
-  uv run bash run_full_baselines.sh
+  uv run bash scripts/run_full_baselines.sh
 ```
 
 ## Single-Cell Commands
 
+Full affine FlatQuant + GPTQ:
+
+```bash
+uv run python -m scripts.run_quantization_baseline \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./quantized_models/baselines_llama31_8b \
+  --run-name llama31_8b_flatquant_gptq_w4a4 \
+  --grid flatquant \
+  --flatquant-transforms-pt ./outputs/flatquant/llama31_8b_transforms.pt \
+  --assignment gptq \
+  --scheme asymmetric \
+  --bits 4 \
+  --activation-bits 4 \
+  --group-size 128
+```
+
+The normalized transform artifact maps each linear module to
+`matrix_left`, `matrix_right`, and optionally `diagonal`,
+or `weight_clip`.
+
 AWQ + fixed-grid FlexRound:
 
 ```bash
-uv run python run_quantization_baseline.py \
+uv run python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/baselines_llama31_8b \
   --run-name llama31_8b_awq_asymmetric_flexround_w3g128_c4n128 \
@@ -336,7 +371,7 @@ output-channel factor. The full runner exposes the same settings through
 FlatQuant diagonal-scale grid + RTN:
 
 ```bash
-uv run python run_quantization_baseline.py \
+uv run python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/baselines_llama31_8b \
   --run-name llama31_8b_flatquant_diag_asymmetric_rtn_w3g128_c4n128 \
@@ -368,10 +403,10 @@ or to a dict with optional clipping:
 }
 ```
 
-SpinQuant no-had + RTN with learned rotations:
+SpinQuant + RTN with learned rotations:
 
 ```bash
-uv run python run_quantization_baseline.py \
+uv run python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/baselines_llama31_8b \
   --run-name llama31_8b_spinquant_asymmetric_rtn_w3g128_c4n128 \
@@ -386,6 +421,9 @@ uv run python run_quantization_baseline.py \
   --seqlen 2048
 ```
 
+Use `--grid spinquant_had --spinquant-r4-pt <R4.pt>` when activation or
+K-cache quantization requires online R3/R4.
+
 For a one-layer smoke run without a learned checkpoint, replace the rotations
 path with `--spinquant-random-rotations --spinquant-random-seed 42` and add
 `--no-save --n-calib 1 --seqlen 128 --max-layers 1`.
@@ -393,7 +431,7 @@ path with `--spinquant-random-rotations --spinquant-random-seed 42` and add
 NeUQI + RTN:
 
 ```bash
-uv run python run_quantization_baseline.py \
+uv run python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/baselines_llama31_8b \
   --run-name llama31_8b_neuqi_asymmetric_rtn_w3g128_c4n128 \
@@ -410,7 +448,7 @@ uv run python run_quantization_baseline.py \
 Minimal AWQ FlexRound smoke run using the generated asymmetric AWQ scales:
 
 ```bash
-python run_quantization_baseline.py \
+python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/flexround_smoke \
   --run-name llama31_8b_awq_asym_flexround_smoke \
@@ -440,7 +478,7 @@ actual benchmark.
 Run smoke checks for every implemented assignment method across grid baselines:
 
 ```bash
-bash run_assignment_smokes.sh
+bash scripts/run_assignment_smokes.sh
 ```
 
 The script runs `rtn`, `gptq`, `gptaq`, `gptaq_rescomp`, `flexround`, and
@@ -454,8 +492,8 @@ assignment only.
 Run selected grids or methods only:
 
 ```bash
-GRIDS="vanilla neuqi" SCHEMES="asymmetric symmetric" bash run_assignment_smokes.sh
-METHODS="rtn flexround" bash run_assignment_smokes.sh
+GRIDS="vanilla neuqi" SCHEMES="asymmetric symmetric" bash scripts/run_assignment_smokes.sh
+METHODS="rtn flexround" bash scripts/run_assignment_smokes.sh
 ```
 
 Save full checkpoints from the same script:
@@ -465,7 +503,7 @@ RUN_MODE=checkpoint \
 GRIDS="vanilla awq neuqi" \
 SCHEMES="asymmetric symmetric" \
 METHODS="rtn gptq gptaq gptaq_rescomp flexround tfic" \
-bash run_assignment_smokes.sh
+bash scripts/run_assignment_smokes.sh
 ```
 
 In checkpoint mode the script writes to
@@ -481,7 +519,7 @@ MODEL_PATH=/path/to/model \
 AWQ_SCALES_PT=/path/to/awq_scales.pt \
 FLATQUANT_PARAMS_PT=/path/to/flatquant_diag_params.pt \
 SPINQUANT_ROTATIONS_PT=/path/to/spinquant_rotations.pt \
-bash run_assignment_smokes.sh
+bash scripts/run_assignment_smokes.sh
 ```
 
 For smoke/debug only, SpinQuant uses random rotations by default when
@@ -491,7 +529,7 @@ SpinQuant unless a learned rotations checkpoint is provided.
 Vanilla + TFIC:
 
 ```bash
-uv run python run_quantization_baseline.py \
+uv run python -m scripts.run_quantization_baseline \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/baselines_llama31_8b \
   --run-name llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
@@ -510,7 +548,7 @@ uv run python run_quantization_baseline.py \
 Evaluate PPL:
 
 ```bash
-uv run python eval_ppl.py \
+uv run python -m scripts.eval_ppl \
   --model-path ./quantized_models/baselines_llama31_8b/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
   --datasets wikitext2 c4 \
   --seqlen 2048 \
@@ -521,7 +559,7 @@ uv run python eval_ppl.py \
 Evaluate PPL and log it to W&B:
 
 ```bash
-uv run python eval_ppl.py \
+uv run python -m scripts.eval_ppl \
   --model-path ./quantized_models/baselines_llama31_8b/llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
   --datasets wikitext2 c4 \
   --seqlen 2048 \
@@ -534,7 +572,7 @@ uv run python eval_ppl.py \
 Log existing result JSON files to W&B:
 
 ```bash
-uv run python log_wandb_results.py \
+uv run python -m scripts.log_wandb_results \
   --use-wandb \
   --run-name llama31_8b_vanilla_asymmetric_tfic_w3g128_c4n128 \
   --model-path meta-llama/Meta-Llama-3.1-8B \
@@ -553,7 +591,7 @@ uv run python log_wandb_results.py \
 The older runner is still available:
 
 ```bash
-PYTHONPATH=. uv run python eigenflip/run_fast.py \
+uv run python -m eigenflip.run_fast \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --output-dir ./quantized_models/eigenflip_3bit \
   --bits 3 --group-size 128 --k 16 \
@@ -561,7 +599,7 @@ PYTHONPATH=. uv run python eigenflip/run_fast.py \
   --calib-dataset c4 --n-calib 128 --seqlen 2048 \
   --layer-batch-size 4 --eig-on-cpu
 
-PYTHONPATH=. uv run python eval_ppl.py \
+uv run python -m scripts.eval_ppl \
   --model-path ./quantized_models/eigenflip_3bit/rtn_asymmetric_tfic_fast \
   --datasets wikitext2 c4 --seqlen 2048
 ```
@@ -570,6 +608,6 @@ PYTHONPATH=. uv run python eval_ppl.py \
 
 - GPTQ and TFIC optimize weighted reconstruction energy, not plain MSE.
 - Final model quality should be compared with PPL and downstream `lm-eval`.
-- AWQ without `AWQ_SCALES_PT` is skipped by `run_full_baselines.sh`.
-- `run_full_baselines.sh` logs W&B by default. Use `RUN_WANDB=0` to disable it, or `--use-wandb` for direct Python commands.
+- AWQ without `AWQ_SCALES_PT` is skipped by `scripts/run_full_baselines.sh`.
+- `scripts/run_full_baselines.sh` logs W&B by default. Use `RUN_WANDB=0` to disable it, or `--use-wandb` for direct Python commands.
 - Heavy GPU runs should be launched only after model access and disk space are ready.

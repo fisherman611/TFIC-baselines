@@ -8,7 +8,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from runtime_utils import is_numeric_metric_value
+from baseline_utils.runtime import is_numeric_metric_value
+from baseline_utils.model_loading import (
+    TRANSFORM_MANIFEST,
+    load_transform_aware_model,
+)
 
 
 class LMEvalHarnessRunner:
@@ -145,9 +149,33 @@ class LMEvalHarnessRunner:
                 "lm-eval is not installed. Install the 'lm-eval' package or disable lm-eval with --no-lm-eval."
             ) from exc
 
+        model_arg = "hf"
+        model_args = self._model_args(model_path)
+        if (Path(model_path) / TRANSFORM_MANIFEST).exists():
+            import torch
+            from lm_eval.models.huggingface import HFLM
+            from transformers import AutoTokenizer
+
+            dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
+            loaded = load_transform_aware_model(
+                model_path,
+                torch_dtype=dtype,
+                device_map="auto" if self.device.startswith("cuda") else None,
+            ).eval()
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+            )
+            model_arg = HFLM(
+                pretrained=loaded,
+                tokenizer=tokenizer,
+                batch_size=self.batch_size,
+            )
+            model_args = None
+
         payload = evaluator.simple_evaluate(
-            model="hf",
-            model_args=self._model_args(model_path),
+            model=model_arg,
+            model_args=model_args,
             tasks=self.tasks,
             device=self.device,
             batch_size=self.batch_size,

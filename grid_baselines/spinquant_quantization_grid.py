@@ -11,9 +11,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import types
 
 import torch
 
+from .attention_runtime import resolve_attention_runtime
+from .transformed_linear import (
+    ActivationQuantizedLinear,
+    SpinQuantHadamardLinear,
+    TransformAwareLinear,
+    apply_factorized_hadamard,
+    fake_quantize_activation,
+)
 from .vanilla_quantization_grid import (
     VanillaQuantizationGrid,
     build_vanilla_quantization_grid,
@@ -31,6 +40,47 @@ class SpinQuantRotations:
 @dataclass
 class SpinQuantQuantizationGrid(VanillaQuantizationGrid):
     '''Uniform weight grid applied after model-level SpinQuant rotation.'''
+
+
+@dataclass
+class SpinQuantR4:
+    """Factorized R4 transform returned by official ``get_hadK``."""
+
+    had_k: torch.Tensor | None
+    k: int
+
+
+def load_spinquant_r4(path: str | Path, *, width: int) -> SpinQuantR4:
+    """Load ``had_K``/``K`` exported from SpinQuant's Hadamard utility."""
+
+    raw = torch.load(path, map_location="cpu")
+    if isinstance(raw, dict) and "r4" in raw:
+        raw = raw["r4"]
+    if not isinstance(raw, dict):
+        raise ValueError("SpinQuant R4 artifact must be a mapping")
+    k = int(raw.get("K", raw.get("k", 0)))
+    had_k = raw.get("had_K", raw.get("had_k"))
+    if had_k is not None:
+        had_k = torch.as_tensor(had_k).detach().cpu()
+    r4 = SpinQuantR4(had_k=had_k, k=k)
+    _validate_r4(r4, width=width)
+    return r4
+
+
+def _validate_r4(r4: SpinQuantR4, *, width: int) -> None:
+    k = r4.k
+    if k <= 0 or width % k or (width // k) & (width // k - 1):
+        raise ValueError("R4 requires intermediate_size / K to be a power of two")
+    if k == 1:
+        if r4.had_k is not None and r4.had_k.numel() != 0:
+            raise ValueError("power-of-two R4 must use K=1 without had_K")
+        return
+    if r4.had_k is None or tuple(r4.had_k.shape) != (k, k):
+        raise ValueError(f"R4 had_K must have shape ({k}, {k})")
+    matrix = r4.had_k.to(torch.float64)
+    expected = torch.eye(k, dtype=torch.float64) * k
+    if not torch.allclose(matrix.t() @ matrix, expected, atol=1e-5, rtol=1e-5):
+        raise ValueError("R4 had_K must satisfy had_K.T @ had_K = K I")
 
 
 def _orthogonal_matrix(size: int, generator: torch.Generator) -> torch.Tensor:
@@ -174,6 +224,17 @@ def _model_layers(model) -> list[torch.nn.Module]:
         ) from exc
 
 
+def _model_head_dim(model) -> int:
+    layers = _model_layers(model)
+    if not layers:
+        raise ValueError("SpinQuant requires at least one Transformer layer")
+    head_dim = int(layers[0].self_attn.head_dim)
+    for layer_idx, layer in enumerate(layers[1:], start=1):
+        if int(layer.self_attn.head_dim) != head_dim:
+            raise ValueError(f"attention head_dim changes at layer {layer_idx}")
+    return head_dim
+
+
 @torch.no_grad()
 def fuse_spinquant_norms(model) -> None:
     '''Fuse pre-norm scales into adjacent linears as required by SpinQuant.'''
@@ -276,8 +337,7 @@ def apply_spinquant_no_had(
         raise ValueError('SpinQuant work_dtype must be float32 or float64')
     layers = _model_layers(model)
     hidden_size = model.config.hidden_size
-    num_heads = model.config.num_attention_heads
-    head_dim = hidden_size // num_heads
+    head_dim = _model_head_dim(model)
     if rotations.R1.shape != (hidden_size, hidden_size):
         raise ValueError('R1 shape does not match model hidden size')
     if set(rotations.R2) != set(range(len(layers))):
@@ -328,6 +388,240 @@ def apply_spinquant_no_had(
         _left_rotate(layer.mlp.down_proj, rotations.R1, work_dtype)
         _rotate_output_headwise(layer.self_attn.v_proj, r2, work_dtype)
         _rotate_input_headwise(layer.self_attn.o_proj, r2, work_dtype)
+
+
+@torch.no_grad()
+def apply_spinquant_r4(
+    model,
+    r4: SpinQuantR4 | None = None,
+    *,
+    weight_is_transformed: bool = False,
+) -> SpinQuantR4:
+    """Apply paper R4 to MLP down projections and its online transform."""
+    width = int(model.config.intermediate_size)
+    if r4 is None:
+        if width & (width - 1):
+            raise ValueError(
+                "non-power-of-two intermediate_size requires a SpinQuant "
+                "R4 artifact containing had_K and K"
+            )
+        r4 = SpinQuantR4(had_k=None, k=1)
+    _validate_r4(r4, width=width)
+    for layer in _model_layers(model):
+        source = layer.mlp.down_proj
+        if not isinstance(source, SpinQuantHadamardLinear):
+            layer.mlp.down_proj = SpinQuantHadamardLinear(
+                source,
+                had_k=r4.had_k,
+                k=r4.k,
+                weight_is_transformed=weight_is_transformed,
+            )
+    return r4
+
+
+def _spinquant_attention_forward(
+    self,
+    hidden_states: torch.Tensor,
+    position_embeddings=None,
+    attention_mask=None,
+    past_key_values=None,
+    **kwargs,
+):
+    runtime = resolve_attention_runtime(self)
+    input_shape = hidden_states.shape[:-1]
+    hidden_shape = (*input_shape, -1, self.head_dim)
+    query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+    key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+    value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+    cos, sin = position_embeddings
+    query_states, key_states = runtime.apply_rotary_pos_emb(
+        query_states, key_states, cos, sin
+    )
+
+    query_states = apply_factorized_hadamard(
+        query_states, had_k=None, k=1
+    )
+    key_states = apply_factorized_hadamard(key_states, had_k=None, k=1)
+    if self._spinquant_k_group_size == -1:
+        batch, heads, sequence, head_dim = key_states.shape
+        token_keys = key_states.transpose(1, 2).reshape(batch, sequence, -1)
+        token_keys = fake_quantize_activation(
+            token_keys,
+            bits=self._spinquant_k_bits,
+            symmetric=self._spinquant_k_symmetric,
+            group_size=-1,
+            clip_ratio=self._spinquant_k_clip_ratio,
+        )
+        key_states = token_keys.reshape(
+            batch, sequence, heads, head_dim
+        ).transpose(1, 2)
+    else:
+        key_states = fake_quantize_activation(
+            key_states,
+            bits=self._spinquant_k_bits,
+            symmetric=self._spinquant_k_symmetric,
+            group_size=self.head_dim,
+            clip_ratio=self._spinquant_k_clip_ratio,
+        )
+
+    if past_key_values is not None:
+        key_states, value_states = past_key_values.update(
+            key_states, value_states, self.layer_idx
+        )
+    attention_interface = runtime.attention_interfaces.get_interface(
+        self.config._attn_implementation, runtime.eager_attention_forward
+    )
+    attention_kwargs = runtime.extra_attention_kwargs(self)
+    attention_kwargs.update(kwargs)
+    attn_output, attn_weights = attention_interface(
+        self,
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
+        dropout=0.0 if not self.training else self.attention_dropout,
+        scaling=self.scaling,
+        **attention_kwargs,
+    )
+    attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+    return self.o_proj(attn_output), attn_weights
+
+
+def add_spinquant_k_cache_quantization(
+    model,
+    *,
+    bits: int,
+    symmetric: bool = False,
+    group_size: int = -1,
+    clip_ratio: float = 1.0,
+) -> None:
+    """Install official post-RoPE R3 and K-cache fake quantization."""
+
+    if bits >= 16:
+        return
+    head_dim = _model_head_dim(model)
+    if head_dim & (head_dim - 1):
+        raise ValueError("SpinQuant K-cache quantization requires power-of-two head_dim")
+    if group_size not in {-1, head_dim}:
+        raise ValueError("K-cache group_size must be -1 or head_dim")
+    for layer in _model_layers(model):
+        attention = layer.self_attn
+        resolve_attention_runtime(attention)
+        attention._spinquant_k_bits = bits
+        attention._spinquant_k_symmetric = symmetric
+        attention._spinquant_k_group_size = group_size
+        attention._spinquant_k_clip_ratio = clip_ratio
+        if not getattr(attention, "_spinquant_qk_patched", False):
+            attention.forward = types.MethodType(
+                _spinquant_attention_forward, attention
+            )
+            attention._spinquant_qk_patched = True
+
+
+@torch.no_grad()
+def add_spinquant_activation_quantization(
+    model,
+    *,
+    bits: int,
+    symmetric: bool = False,
+    group_size: int = -1,
+    clip_ratio: float = 1.0,
+    v_bits: int = 16,
+    v_symmetric: bool = False,
+    v_clip_ratio: float = 1.0,
+    int8_down_proj: bool = False,
+) -> None:
+    """Configure the activation path used by the official SpinQuant PTQ code.
+
+    Inputs are quantized per token (or per group).  ``o_proj`` uses one group
+    per attention head, ``down_proj`` preserves the number of groups used in
+    the residual width, ``v_proj`` optionally quantizes its output per head,
+    and ``lm_head`` remains in floating point.
+    """
+
+    if bits >= 16 and v_bits >= 16:
+        return
+    head_dim = _model_head_dim(model)
+    down_group_size = group_size
+    if group_size > 0 and model.config.intermediate_size % group_size != 0:
+        group_count = model.config.hidden_size // group_size
+        if group_count * group_size != model.config.hidden_size:
+            raise ValueError(
+                "activation group_size must divide the model hidden size"
+            )
+        if model.config.intermediate_size % group_count != 0:
+            raise ValueError(
+                "cannot preserve activation group count for down_proj"
+            )
+        down_group_size = model.config.intermediate_size // group_count
+    replacements = []
+    for name, module in model.named_modules():
+        if name == "lm_head" or name.endswith(".lm_head"):
+            continue
+        if isinstance(module, SpinQuantHadamardLinear):
+            module.activation_bits = 8 if int8_down_proj else bits
+            module.activation_symmetric = symmetric
+            module.activation_group_size = down_group_size
+            module.activation_clip_ratio = clip_ratio
+            continue
+        if isinstance(module, TransformAwareLinear):
+            module.activation_bits = bits
+            module.activation_symmetric = symmetric
+            module.activation_group_size = group_size
+            module.activation_clip_ratio = clip_ratio
+            continue
+        if isinstance(module, torch.nn.Linear) and not isinstance(
+            module, ActivationQuantizedLinear
+        ):
+            replacements.append((name, module))
+    for name, module in replacements:
+        input_bits = 8 if int8_down_proj and name.endswith("down_proj") else bits
+        input_group_size = group_size
+        if name.endswith("o_proj"):
+            input_group_size = head_dim
+        elif name.endswith("down_proj"):
+            input_group_size = down_group_size
+        output_bits = v_bits if name.endswith("v_proj") else 16
+        parent_name, _, child_name = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        setattr(
+            parent,
+            child_name,
+            ActivationQuantizedLinear(
+                module,
+                bits=input_bits,
+                symmetric=symmetric,
+                group_size=input_group_size,
+                clip_ratio=clip_ratio,
+                output_bits=output_bits,
+                output_symmetric=v_symmetric,
+                output_group_size=head_dim,
+                output_clip_ratio=v_clip_ratio,
+            ),
+        )
+
+
+def cayley_update(
+    rotation: torch.Tensor,
+    gradient: torch.Tensor,
+    *,
+    step_size: float,
+) -> torch.Tensor:
+    """One Cayley-SGD update from Eq. 3-4 of the SpinQuant paper."""
+
+    projected = gradient @ rotation.t()
+    projected = projected - 0.5 * (
+        rotation @ rotation.t() @ projected
+    )
+    skew = projected - projected.t()
+    identity = torch.eye(
+        rotation.shape[0],
+        device=rotation.device,
+        dtype=rotation.dtype,
+    )
+    left = identity - 0.5 * step_size * skew
+    right = (identity + 0.5 * step_size * skew) @ rotation
+    return torch.linalg.solve(left, right)
 
 
 @torch.no_grad()

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from runtime_utils import (
+from baseline_utils.runtime import (
     collect_lm_eval_wandb_metrics,
     is_numeric_metric_value,
     resolve_wandb_api_key,

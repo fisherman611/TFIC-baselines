@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+cd "$ROOT_DIR"
 #/home/DATA/prometheus/anh/.cache/huggingface/hub/models--mistralai--Mistral-7B-v0.3/snapshots/caa1feb0e54d415e2df31207e5f4e273e33509b1  #
 #MODEL_PATH=/home/DATA/prometheus/anh/.cache/huggingface/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b
 MODEL_PATH=/home/DATA/prometheus/anh/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B/snapshots/d149729398750b98c0af14eb82c78cfe92750796 
@@ -28,7 +32,7 @@ for ENC in  tfic_fast gptq; do
   echo "############################################################"
 
   echo ">>> [1/3] quantizing rtn+$SCHEME+$ENC"
-  PYTHONPATH=. python eigenflip/run_fast.py \
+  python -m eigenflip.run_fast \
     --model-path "$MODEL_PATH" \
     --output-dir "$OUTPUT_DIR" \
     --bits 3 --group-size 128 --k 16 \
@@ -42,7 +46,7 @@ for ENC in  tfic_fast gptq; do
   fi
 
   echo ">>> [2/3] eval_ppl on $CELL_DIR"
-  PYTHONPATH=. python eval_ppl.py \
+  python -m scripts.eval_ppl \
     --model-path "$CELL_DIR" \
     --datasets wikitext2 c4 --seqlen 2048
 

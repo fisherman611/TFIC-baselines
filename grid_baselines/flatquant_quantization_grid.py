@@ -42,13 +42,20 @@ class FlatQuantDiagQuantizationGrid:
     def quantize(self, weights: torch.Tensor | None = None) -> torch.Tensor:
         """Assign weights to nearest integer codes on this fixed grid."""
 
-        source = self.float_weights if weights is None else weights
-        if source.shape[-1] != self.padded_in_features:
-            source = self._pad_like_grid(source)
-        scaled = source * self.flatquant_scales
+        if weights is None:
+            scaled = self.scaled_weights
+        else:
+            source = weights
+            if source.shape[-1] != self.padded_in_features:
+                source = self._pad_like_grid(source)
+            scaled = source * self.flatquant_scales
         scale_q = self.scale * self.flatquant_scales
         codes = torch.round(scaled / scale_q + self.zero_point)
         return codes.clamp(self.qmin, self.qmax)
+
+    def pre_round_values(self) -> torch.Tensor:
+        scale_q = self.scale * self.flatquant_scales
+        return self.scaled_weights / scale_q + self.zero_point
 
     @torch.no_grad()
     def dequantize(self, integer_weights: torch.Tensor) -> torch.Tensor:
@@ -97,6 +104,8 @@ def _clip_group_range(
     *,
     scheme: str,
     weight_clip: float,
+    weight_clip_max: torch.Tensor | None = None,
+    weight_clip_min: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     if not (0 < weight_clip <= 1):
         raise ValueError(
@@ -108,6 +117,14 @@ def _clip_group_range(
 
     wmin = grouped.min(dim=2, keepdim=True)[0]
     wmax = grouped.max(dim=2, keepdim=True)[0]
+    if weight_clip_max is not None or weight_clip_min is not None:
+        if weight_clip_max is None or weight_clip_min is None:
+            raise ValueError("FlatQuant clipping requires both max and min factors")
+        max_factor = weight_clip_max.to(grouped).reshape(-1, 1, 1)
+        min_factor = weight_clip_min.to(grouped).reshape(-1, 1, 1)
+        if max_factor.shape[0] != grouped.shape[0]:
+            raise ValueError("FlatQuant weight clip factors must be per output channel")
+        return wmin * min_factor, wmax * max_factor
     if weight_clip == 1:
         return wmin, wmax
     midpoint = 0.5 * (wmin + wmax)
@@ -124,6 +141,8 @@ def build_flatquant_diag_quantization_grid(
     *,
     scheme: str = "asymmetric",
     weight_clip: float | torch.Tensor = 1.0,
+    weight_clip_max: torch.Tensor | None = None,
+    weight_clip_min: torch.Tensor | None = None,
     eps: float = 1e-8,
 ) -> FlatQuantDiagQuantizationGrid:
     """Build a FlatQuant diagonal-scale fixed grid for ``weights``.
@@ -163,6 +182,19 @@ def build_flatquant_diag_quantization_grid(
 
     clip_value = float(torch.as_tensor(weight_clip).detach().cpu().reshape(-1)[0].item())
     scaled_weights = weights * scales
+    if weight_clip_max is not None or weight_clip_min is not None:
+        if weight_clip_max is None or weight_clip_min is None:
+            raise ValueError("FlatQuant clipping requires both max and min factors")
+        max_factor = weight_clip_max.to(device=device, dtype=dtype).reshape(-1, 1)
+        min_factor = weight_clip_min.to(device=device, dtype=dtype).reshape(-1, 1)
+        if max_factor.shape[0] != rows or min_factor.shape[0] != rows:
+            raise ValueError(
+                "FlatQuant weight clipping factors must have one value per "
+                "output channel"
+            )
+        row_min = scaled_weights.amin(dim=1, keepdim=True) * min_factor
+        row_max = scaled_weights.amax(dim=1, keepdim=True) * max_factor
+        scaled_weights = torch.clamp(scaled_weights, min=row_min, max=row_max)
     n_groups = (in_features + group_size - 1) // group_size
     padded_in = n_groups * group_size
     if padded_in > in_features:

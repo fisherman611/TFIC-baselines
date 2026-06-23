@@ -67,6 +67,21 @@ def _resolve_stats_device(module: nn.Module, stats_device: str, input_device: to
     return resolved
 
 
+def _assignment_input(module: nn.Module, value: torch.Tensor) -> torch.Tensor:
+    """Return the coordinate system used by the module's stored weight.
+
+    Model-level methods such as FlatQuant may keep a transformed weight in the
+    linear module while applying the matching activation transform inside
+    ``forward``.  Assignment methods must build their statistics from that
+    transformed activation, not from the public module input.
+    """
+
+    transform = getattr(module, "assignment_input", None)
+    if callable(transform):
+        return transform(value)
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Streaming accumulator: mean-only (O(d)) or full Gram (d x d). fp32 matmul,
 # fp64 buffer. Never stores activations.
@@ -305,6 +320,7 @@ def collect_and_encode_awq_style(
             def mk_fp_hook(nm):
                 def hook(_m, inp, _o):
                     x = inp[0] if isinstance(inp, tuple) else inp
+                    x = _assignment_input(_m, x)
                     fp_inputs[nm].append(
                         x.detach().to("cpu", dtype=paired_cache_dtype)
                     )
@@ -330,6 +346,7 @@ def collect_and_encode_awq_style(
             def mk_quant_hook(nm):
                 def hook(_m, inp, _o):
                     x = inp[0] if isinstance(inp, tuple) else inp
+                    x = _assignment_input(_m, x)
                     accs[nm].add_paired(x, fp_inputs[nm][cursor["idx"]])
                 return hook
 
@@ -350,6 +367,7 @@ def collect_and_encode_awq_style(
             def mk_hook(nm):
                 def hook(_m, inp, _o):
                     x = inp[0] if isinstance(inp, tuple) else inp
+                    x = _assignment_input(_m, x)
                     accs[nm].add(x)
                 return hook
 

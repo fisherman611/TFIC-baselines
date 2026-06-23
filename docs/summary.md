@@ -285,7 +285,7 @@ q, W_hat = grid.round_to_nearest()
 Runner usage:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid flatquant_diag `
   --flatquant-params-pt <path-to-flatquant-params.pt> `
@@ -403,7 +403,7 @@ W_hat, info = GPTQAssignment().apply_to_grid(grid, stats)
 ### GPTAQ
 
 Status: implemented in `assignment_methods/gptaq.py` and wired into
-`run_quantization_baseline.py`.
+`scripts/run_quantization_baseline.py`.
 
 GPTAQ extends GPTQ with paired asymmetric calibration statistics:
 
@@ -579,7 +579,7 @@ the represented dequantized weights are unchanged.
 
 ## Real Model Runner
 
-Status: implemented in `run_quantization_baseline.py`.
+Status: implemented in `scripts/run_quantization_baseline.py`.
 
 This runner uses the modular baseline folders directly:
 
@@ -590,7 +590,7 @@ assignment_methods  -> assigns integer codes on that grid
 
 ### Calibration And Evaluation Protocol
 
-Calibration is loaded in `calibration_utils.py`.
+Calibration is loaded from `baseline_utils/calibration.py`.
 
 Default real-run calibration:
 
@@ -603,7 +603,7 @@ sampling: random 2048-token window inside each long document
 cache: ./calibration_cache
 ```
 
-Perplexity evaluation is loaded in `eval_ppl.py`.
+Perplexity evaluation is implemented in `scripts/eval_ppl.py`.
 
 Evaluation datasets:
 
@@ -628,7 +628,7 @@ the separation explicit.
 Vanilla + RTN:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid vanilla `
   --scheme asymmetric `
@@ -645,7 +645,7 @@ python run_quantization_baseline.py `
 Vanilla + GPTQ:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid vanilla `
   --scheme asymmetric `
@@ -664,7 +664,7 @@ python run_quantization_baseline.py `
 Vanilla + TFIC:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid vanilla `
   --scheme asymmetric `
@@ -683,7 +683,7 @@ python run_quantization_baseline.py `
 Vanilla + FlexRound:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid vanilla `
   --scheme asymmetric `
@@ -704,7 +704,7 @@ python run_quantization_baseline.py `
 AWQ + RTN:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid awq `
   --awq-scales-pt <path-to-awq-scales.pt> `
@@ -722,7 +722,7 @@ python run_quantization_baseline.py `
 AWQ + GPTQ:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid awq `
   --awq-scales-pt <path-to-awq-scales.pt> `
@@ -742,7 +742,7 @@ python run_quantization_baseline.py `
 AWQ + TFIC:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid awq `
   --awq-scales-pt <path-to-awq-scales.pt> `
@@ -762,7 +762,7 @@ python run_quantization_baseline.py `
 AWQ + FlexRound:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid awq `
   --awq-scales-pt <path-to-awq-scales.pt> `
@@ -784,7 +784,7 @@ python run_quantization_baseline.py `
 FlatQuant diagonal-scale + RTN:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path <hf-model-or-local-path> `
   --grid flatquant_diag `
   --flatquant-params-pt <path-to-flatquant-params.pt> `
@@ -802,7 +802,7 @@ python run_quantization_baseline.py `
 Lightweight AWQ + FlexRound smoke run:
 
 ```powershell
-python run_quantization_baseline.py `
+python -m scripts.run_quantization_baseline `
   --model-path meta-llama/Meta-Llama-3.1-8B `
   --output-dir ./quantized_models/flexround_smoke `
   --run-name llama31_8b_awq_asym_flexround_smoke `
@@ -831,10 +831,10 @@ should use `--k 16` and the full calibration/optimization budget.
 Smoke all implemented assignment methods:
 
 ```powershell
-bash run_assignment_smokes.sh
+bash scripts/run_assignment_smokes.sh
 ```
 
-`run_assignment_smokes.sh` runs RTN, GPTQ, FlexRound, and TFIC on the existing
+`scripts/run_assignment_smokes.sh` runs RTN, GPTQ, FlexRound, and TFIC on the existing
 asymmetric AWQ grid. It uses one calibration sample, sequence length 128, and
 `--max-layers 1`, so only the first linear layer is quantized. It uses
 `--no-save` to avoid writing four full LLaMA checkpoints. These runs check model
@@ -845,7 +845,7 @@ loading, calibration, grid construction, and assignment only.
 Evaluate a saved checkpoint on WikiText2 test and C4 validation:
 
 ```powershell
-python eval_ppl.py `
+python -m scripts.eval_ppl `
   --model-path ./quantized_models/baselines/vanilla_asym_tfic_w3g128_c4n128 `
   --datasets wikitext2 c4 `
   --seqlen 2048 `
@@ -856,7 +856,7 @@ python eval_ppl.py `
 Run only WikiText2:
 
 ```powershell
-python eval_ppl.py `
+python -m scripts.eval_ppl `
   --model-path ./quantized_models/baselines/vanilla_asym_tfic_w3g128_c4n128 `
   --datasets wikitext2 `
   --seqlen 2048
@@ -865,7 +865,7 @@ python eval_ppl.py `
 Run only C4 validation:
 
 ```powershell
-python eval_ppl.py `
+python -m scripts.eval_ppl `
   --model-path ./quantized_models/baselines/vanilla_asym_tfic_w3g128_c4n128 `
   --datasets c4 `
   --seqlen 2048 `

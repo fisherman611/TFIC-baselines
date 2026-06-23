@@ -2,8 +2,8 @@
 
 The output is a .pt file compatible with:
 
-    AWQ_SCALES_PT=<out.pt> bash run_full_baselines.sh
-    python run_quantization_baseline.py --grid awq --awq-scales-pt <out.pt> ...
+    AWQ_SCALES_PT=<out.pt> bash scripts/run_full_baselines.sh
+    python -m scripts.run_quantization_baseline --grid awq --awq-scales-pt <out.pt> ...
 
 For each Linear layer, this script collects:
 
@@ -28,10 +28,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from eigenflip.quantization.awq_scales import compute_awq_scales
 from eigenflip.statistics.collect_fast import _resolve_input_device, is_lm_head
-from runtime_utils import build_model_slug, load_runtime_env
+from baseline_utils.runtime import build_model_slug, load_runtime_env
 
 try:
-    from calibration_utils import get_c4_calibration_data, get_wikitext2_calibration_data
+    from baseline_utils.calibration import (
+        get_c4_calibration_data,
+        get_wikitext2_calibration_data,
+    )
 except ImportError:
     get_c4_calibration_data = get_wikitext2_calibration_data = None
 
@@ -99,7 +102,7 @@ def validate_calibration_token_ids(
 
 def load_calibration(tokenizer, args):
     if get_c4_calibration_data is None:
-        raise RuntimeError("calibration_utils.py is not importable")
+        raise RuntimeError("baseline_utils.calibration is not importable")
     if args.calib_dataset == "c4":
         return get_c4_calibration_data(
             tokenizer,

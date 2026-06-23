@@ -12,6 +12,14 @@ from .flatquant_quantization_grid import (
     build_flatquant_diag_quantization_grid,
     build_symmetric_flatquant_diag_quantization_grid,
 )
+from .flatquant_model import (
+    apply_flatquant_attention_transforms,
+    apply_flatquant_transforms,
+    load_flatquant_attention_clips,
+    load_flatquant_attention_transforms,
+    load_flatquant_transforms,
+    serialize_flatquant_transforms,
+)
 from .neuqi_quantization_grid import (
     NeUQIQuantizationGrid,
     build_asymmetric_neuqi_quantization_grid,
@@ -20,13 +28,19 @@ from .neuqi_quantization_grid import (
 )
 from .spinquant_quantization_grid import (
     SpinQuantQuantizationGrid,
+    SpinQuantR4,
     SpinQuantRotations,
+    add_spinquant_k_cache_quantization,
+    add_spinquant_activation_quantization,
     apply_spinquant_no_had,
+    apply_spinquant_r4,
     build_asymmetric_spinquant_quantization_grid,
     build_spinquant_quantization_grid,
     build_symmetric_spinquant_quantization_grid,
+    cayley_update,
     fuse_spinquant_norms,
     load_spinquant_rotations,
+    load_spinquant_r4,
     random_spinquant_rotations,
 )
 from .vanilla_quantization_grid import (
@@ -38,16 +52,28 @@ from .vanilla_quantization_grid import (
 
 __all__ = [
     'SpinQuantQuantizationGrid',
+    'add_spinquant_k_cache_quantization',
+    'SpinQuantR4',
+    'add_spinquant_activation_quantization',
+    'cayley_update',
     'SpinQuantRotations',
     'apply_spinquant_no_had',
+    'apply_spinquant_r4',
     'build_asymmetric_spinquant_quantization_grid',
     'build_spinquant_quantization_grid',
     'build_symmetric_spinquant_quantization_grid',
     'fuse_spinquant_norms',
     'load_spinquant_rotations',
+    'load_spinquant_r4',
     'random_spinquant_rotations',
     "AWQQuantizationGrid",
     "FlatQuantDiagQuantizationGrid",
+    "apply_flatquant_transforms",
+    "apply_flatquant_attention_transforms",
+    "load_flatquant_attention_clips",
+    "load_flatquant_attention_transforms",
+    "load_flatquant_transforms",
+    "serialize_flatquant_transforms",
     "NeUQIQuantizationGrid",
     "VanillaQuantizationGrid",
     "build_asymmetric_neuqi_quantization_grid",

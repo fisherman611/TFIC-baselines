@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+cd "$ROOT_DIR"
+
 # End-to-end AWQ assignment smoke for LLaMA:
 # small calibration -> save checkpoint -> run small PPL eval for each method.
 #
@@ -67,7 +71,7 @@ for METHOD in $METHODS; do
   echo "=== quantize: $METHOD ==="
   echo "checkpoint: $CHECKPOINT_DIR"
 
-  PYTHONPATH=. python run_quantization_baseline.py \
+  python -m scripts.run_quantization_baseline \
     --model-path "$MODEL_PATH" \
     --output-dir "$OUTPUT_DIR" \
     --run-name "$RUN_NAME" \
@@ -92,7 +96,7 @@ for METHOD in $METHODS; do
   echo "result json: $PPL_JSON"
 
   # shellcheck disable=SC2086
-  PYTHONPATH=. python eval_ppl.py \
+  python -m scripts.eval_ppl \
     --model-path "$CHECKPOINT_DIR" \
     --datasets $EVAL_DATASETS \
     --seqlen "$SEQLEN" \

@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
-from lm_eval_runner import LMEvalHarnessRunner
-from runtime_utils import DEFAULT_LM_EVAL_TASKS
+from baseline_utils.runtime import DEFAULT_LM_EVAL_TASKS
+from scripts.lm_eval_runner import LMEvalHarnessRunner
 
 
 def main():

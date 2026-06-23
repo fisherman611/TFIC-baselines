@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+cd "$ROOT_DIR"
+
 # Grid-baseline x assignment-method driver.
 #
 # Default mode is a lightweight smoke test:
-#   bash run_assignment_smokes.sh
+#   bash scripts/run_assignment_smokes.sh
 #
 # To save full checkpoints from the same file:
-#   RUN_MODE=checkpoint bash run_assignment_smokes.sh
+#   RUN_MODE=checkpoint bash scripts/run_assignment_smokes.sh
 
 MODEL_PATH=${MODEL_PATH:-meta-llama/Meta-Llama-3.1-8B}
 RUN_PREFIX=${RUN_PREFIX:-llama31_8b}
@@ -63,7 +67,9 @@ AWQ_SCALES_PT_SYMMETRIC=${AWQ_SCALES_PT_SYMMETRIC:-./outputs/awq_scales/${RUN_PR
 FLATQUANT_PARAMS_PT=${FLATQUANT_PARAMS_PT:-}
 FLATQUANT_PARAMS_PT_ASYMMETRIC=${FLATQUANT_PARAMS_PT_ASYMMETRIC:-}
 FLATQUANT_PARAMS_PT_SYMMETRIC=${FLATQUANT_PARAMS_PT_SYMMETRIC:-}
+FLATQUANT_TRANSFORMS_PT=${FLATQUANT_TRANSFORMS_PT:-}
 SPINQUANT_ROTATIONS_PT=${SPINQUANT_ROTATIONS_PT:-}
+SPINQUANT_R4_PT=${SPINQUANT_R4_PT:-}
 SPINQUANT_RANDOM_SEED=${SPINQUANT_RANDOM_SEED:-42}
 
 NEUQI_SCALE_CANDIDATES=${NEUQI_SCALE_CANDIDATES:-16}
@@ -98,7 +104,7 @@ generate_awq_scales_if_missing() {
   echo
   echo ">>> generating missing AWQ scales: scheme=$scheme out=$out_path"
   mkdir -p "$(dirname "$out_path")"
-  PYTHONPATH=. python generate_awq_scales.py \
+  python -m scripts.generate_awq_scales \
     --model-path "$MODEL_PATH" \
     --scheme "$scheme" \
     --bits "$BITS" \
@@ -187,7 +193,18 @@ for GRID in $GRIDS; do
       GRID_ARGS+=(--flatquant-params-pt "$SCHEME_FLATQUANT_PARAMS_PT")
     fi
 
-    if [[ "$GRID" == "spinquant" ]]; then
+    if [[ "$GRID" == "flatquant" ]]; then
+      if [[ -z "$FLATQUANT_TRANSFORMS_PT" || ! -f "$FLATQUANT_TRANSFORMS_PT" ]]; then
+        echo
+        echo "!!! skipping grid=flatquant scheme=$SCHEME because transforms are missing"
+        echo "!!! set FLATQUANT_TRANSFORMS_PT"
+        SKIPS=$((SKIPS + 1))
+        continue
+      fi
+      GRID_ARGS+=(--flatquant-transforms-pt "$FLATQUANT_TRANSFORMS_PT")
+    fi
+
+    if [[ "$GRID" == "spinquant" || "$GRID" == "spinquant_had" ]]; then
       if [[ -n "$SPINQUANT_ROTATIONS_PT" ]]; then
         if [[ ! -f "$SPINQUANT_ROTATIONS_PT" ]]; then
           echo
@@ -204,6 +221,14 @@ for GRID in $GRIDS; do
         echo "!!! set SPINQUANT_ROTATIONS_PT, or SPINQUANT_RANDOM_ROTATIONS=1 for smoke/debug runs"
         SKIPS=$((SKIPS + 1))
         continue
+      fi
+      if [[ "$GRID" == "spinquant_had" && -n "$SPINQUANT_R4_PT" ]]; then
+        if [[ ! -f "$SPINQUANT_R4_PT" ]]; then
+          echo "!!! skipping grid=spinquant_had because R4 is missing: $SPINQUANT_R4_PT"
+          SKIPS=$((SKIPS + 1))
+          continue
+        fi
+        GRID_ARGS+=(--spinquant-r4-pt "$SPINQUANT_R4_PT")
       fi
     fi
 
@@ -231,7 +256,7 @@ for GRID in $GRIDS; do
 
       echo
       echo "=== assignment/grid $RUN_KIND: grid=$GRID scheme=$SCHEME method=$METHOD lbs=$LBS ==="
-      PYTHONPATH=. python run_quantization_baseline.py \
+      python -m scripts.run_quantization_baseline \
         --model-path "$MODEL_PATH" \
         --output-dir "$OUTPUT_DIR" \
         --run-name "$RUN_NAME" \

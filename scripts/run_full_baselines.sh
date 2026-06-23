@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+cd "$ROOT_DIR"
+
 # Full experiment driver for the new modular baseline code:
-#   grid_baselines/ + assignment_methods/ + run_quantization_baseline.py
+#   grid_baselines/ + assignment_methods/ + scripts/run_quantization_baseline.py
 #
 # Default priority model: LLaMA-3.1-8B. Override paths/settings from the shell:
 #
-#   MODEL_PATH=/path/or/hf/id bash run_full_baselines.sh
-#   MODEL_PATH=meta-llama/Meta-Llama-3.1-8B AWQ_SCALES_PT=./awq_scales.pt bash run_full_baselines.sh
-#   AWQ_SCALES_PT_ASYMMETRIC=./awq_asym.pt AWQ_SCALES_PT_SYMMETRIC=./awq_sym.pt bash run_full_baselines.sh
-#   FLATQUANT_PARAMS_PT=./flatquant_diag_params.pt GRIDS="flatquant_diag" bash run_full_baselines.sh
-#   SPINQUANT_ROTATIONS_PT=./R.bin GRIDS="spinquant" bash run_full_baselines.sh
+#   MODEL_PATH=/path/or/hf/id bash scripts/run_full_baselines.sh
+#   MODEL_PATH=meta-llama/Meta-Llama-3.1-8B AWQ_SCALES_PT=./awq_scales.pt bash scripts/run_full_baselines.sh
+#   AWQ_SCALES_PT_ASYMMETRIC=./awq_asym.pt AWQ_SCALES_PT_SYMMETRIC=./awq_sym.pt bash scripts/run_full_baselines.sh
+#   FLATQUANT_PARAMS_PT=./flatquant_diag_params.pt GRIDS="flatquant_diag" bash scripts/run_full_baselines.sh
+#   SPINQUANT_ROTATIONS_PT=./R.bin GRIDS="spinquant" bash scripts/run_full_baselines.sh
 #
 # To run fewer cells:
 #
-#   GRIDS="vanilla" ASSIGNMENTS="rtn tfic" SCHEMES="asymmetric" bash run_full_baselines.sh
+#   GRIDS="vanilla" ASSIGNMENTS="rtn tfic" SCHEMES="asymmetric" bash scripts/run_full_baselines.sh
 #
 # To skip expensive downstream lm-eval:
 #
-#   RUN_LM_EVAL=0 bash run_full_baselines.sh
+#   RUN_LM_EVAL=0 bash scripts/run_full_baselines.sh
 
 if [[ -f .env ]]; then
   set -a
@@ -61,7 +65,9 @@ AWQ_SCALES_PT_SYMMETRIC=${AWQ_SCALES_PT_SYMMETRIC:-}
 FLATQUANT_PARAMS_PT=${FLATQUANT_PARAMS_PT:-}
 FLATQUANT_PARAMS_PT_ASYMMETRIC=${FLATQUANT_PARAMS_PT_ASYMMETRIC:-}
 FLATQUANT_PARAMS_PT_SYMMETRIC=${FLATQUANT_PARAMS_PT_SYMMETRIC:-}
+FLATQUANT_TRANSFORMS_PT=${FLATQUANT_TRANSFORMS_PT:-}
 SPINQUANT_ROTATIONS_PT=${SPINQUANT_ROTATIONS_PT:-}
+SPINQUANT_R4_PT=${SPINQUANT_R4_PT:-}
 SPINQUANT_RANDOM_ROTATIONS=${SPINQUANT_RANDOM_ROTATIONS:-0}
 SPINQUANT_RANDOM_SEED=${SPINQUANT_RANDOM_SEED:-$CALIB_SEED}
 
@@ -172,7 +178,15 @@ for GRID in $GRIDS; do
         fi
         GRID_ARGS+=(--flatquant-params-pt "$SCHEME_FLATQUANT_PARAMS_PT")
       fi
-      if [[ "$GRID" == "spinquant" ]]; then
+      if [[ "$GRID" == "flatquant" ]]; then
+        if [[ -z "$FLATQUANT_TRANSFORMS_PT" ]]; then
+          echo "!!! skipping grid=flatquant scheme=$SCHEME because no transform path is set"
+          echo "!!! set FLATQUANT_TRANSFORMS_PT"
+          continue
+        fi
+        GRID_ARGS+=(--flatquant-transforms-pt "$FLATQUANT_TRANSFORMS_PT")
+      fi
+      if [[ "$GRID" == "spinquant" || "$GRID" == "spinquant_had" ]]; then
         if [[ -n "$SPINQUANT_ROTATIONS_PT" ]]; then
           GRID_ARGS+=(--spinquant-rotations-pt "$SPINQUANT_ROTATIONS_PT")
         elif [[ "$SPINQUANT_RANDOM_ROTATIONS" == "1" ]]; then
@@ -186,6 +200,9 @@ for GRID in $GRIDS; do
           echo "!!! set SPINQUANT_ROTATIONS_PT, or SPINQUANT_RANDOM_ROTATIONS=1 for smoke/debug runs"
           continue
         fi
+        if [[ "$GRID" == "spinquant_had" && -n "$SPINQUANT_R4_PT" ]]; then
+          GRID_ARGS+=(--spinquant-r4-pt "$SPINQUANT_R4_PT")
+        fi
       fi
 
       echo
@@ -195,7 +212,7 @@ for GRID in $GRIDS; do
       echo "############################################################"
 
       echo ">>> [1/3] quantize"
-      PYTHONPATH=. python run_quantization_baseline.py \
+      python -m scripts.run_quantization_baseline \
         --model-path "$MODEL_PATH" \
         --output-dir "$OUTPUT_DIR" \
         --run-name "$RUN_NAME" \
@@ -225,7 +242,7 @@ for GRID in $GRIDS; do
         if [[ -n "$WIKITEXT2_SAMPLES" ]]; then
           PPL_ARGS+=(--wikitext2-samples "$WIKITEXT2_SAMPLES")
         fi
-        PYTHONPATH=. python eval_ppl.py \
+        python -m scripts.eval_ppl \
           --model-path "$CKPT_DIR" \
           --datasets wikitext2 c4 \
           --seqlen "$SEQLEN" \
@@ -248,8 +265,8 @@ import json
 import sys
 from datetime import datetime
 
-from lm_eval_runner import LMEvalHarnessRunner
-from runtime_utils import DEFAULT_LM_EVAL_TASKS, load_runtime_env, resolve_hf_token
+from baseline_utils.runtime import DEFAULT_LM_EVAL_TASKS, load_runtime_env, resolve_hf_token
+from scripts.lm_eval_runner import LMEvalHarnessRunner
 
 model_path, run_name, output_dir = sys.argv[1:4]
 load_runtime_env()
@@ -303,7 +320,7 @@ PY
         if [[ -f "$RESULT_DIR/lm_eval/${RUN_NAME}_summary.json" ]]; then
           WANDB_ARGS+=(--lm-eval-summary-json "$RESULT_DIR/lm_eval/${RUN_NAME}_summary.json")
         fi
-        PYTHONPATH=. python log_wandb_results.py "${WANDB_ARGS[@]}"
+        python -m scripts.log_wandb_results "${WANDB_ARGS[@]}"
       else
         echo ">>> [wandb] skipped"
       fi

@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from calibration_utils import _tokenizer_cache_key
-from generate_awq_scales import (
+from baseline_utils.calibration import _tokenizer_cache_key
+from scripts.generate_awq_scales import (
     InvalidCalibrationTokenIds,
     validate_calibration_token_ids,
 )

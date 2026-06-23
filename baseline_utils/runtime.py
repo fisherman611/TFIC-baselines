@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENV_PATH = ROOT / ".env"
 LM_EVAL_PREFERRED_METRICS = (
     "acc,none",

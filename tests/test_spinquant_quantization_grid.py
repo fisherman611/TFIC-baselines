@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 import torch
-from transformers import LlamaConfig, LlamaForCausalLM
+from transformers import (
+    LlamaConfig,
+    LlamaForCausalLM,
+    MistralConfig,
+    MistralForCausalLM,
+    Qwen2Config,
+    Qwen2ForCausalLM,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,14 +21,19 @@ if str(ROOT) not in sys.path:
 
 from grid_baselines import (  # noqa: E402
     SpinQuantRotations,
+    add_spinquant_k_cache_quantization,
+    add_spinquant_activation_quantization,
     apply_spinquant_no_had,
+    apply_spinquant_r4,
     build_asymmetric_spinquant_quantization_grid,
     build_spinquant_quantization_grid,
     build_symmetric_spinquant_quantization_grid,
     build_vanilla_quantization_grid,
+    cayley_update,
     load_spinquant_rotations,
     random_spinquant_rotations,
 )
+from grid_baselines.transformed_linear import ActivationQuantizedLinear  # noqa: E402
 from tests.examples import assignment_toy_weights  # noqa: E402
 
 
@@ -45,11 +57,67 @@ def _tiny_llama() -> LlamaForCausalLM:
     return LlamaForCausalLM(config).eval()
 
 
-def _tiny_rotations() -> SpinQuantRotations:
-    return SpinQuantRotations(
-        R1=_orthogonal(8, 1),
-        R2={0: _orthogonal(2, 2), 1: _orthogonal(2, 3)},
+def _tiny_qwen2() -> Qwen2ForCausalLM:
+    config = Qwen2Config(
+        vocab_size=32,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=32,
+        use_sliding_window=True,
+        sliding_window=4,
+        max_window_layers=2,
+        tie_word_embeddings=False,
     )
+    return Qwen2ForCausalLM(config).eval()
+
+
+def _tiny_mistral() -> MistralForCausalLM:
+    config = MistralConfig(
+        vocab_size=32,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=32,
+        sliding_window=4,
+        tie_word_embeddings=False,
+    )
+    return MistralForCausalLM(config).eval()
+
+
+MODEL_FACTORIES = (_tiny_llama, _tiny_qwen2, _tiny_mistral)
+
+
+def _rotations_for(model) -> SpinQuantRotations:
+    head_dim = int(model.model.layers[0].self_attn.head_dim)
+    return SpinQuantRotations(
+        R1=_orthogonal(model.config.hidden_size, 1),
+        R2={
+            layer_idx: _orthogonal(head_dim, layer_idx + 2)
+            for layer_idx in range(model.config.num_hidden_layers)
+        },
+    )
+
+
+def _tiny_rotations() -> SpinQuantRotations:
+    return _rotations_for(_tiny_llama())
+
+
+@pytest.mark.parametrize("model_factory", MODEL_FACTORIES)
+def test_spinquant_no_had_multi_model_full_precision_parity(model_factory):
+    torch.manual_seed(0)
+    model = model_factory()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    with torch.no_grad():
+        expected = model(input_ids).logits
+    apply_spinquant_no_had(model, _rotations_for(model))
+    with torch.no_grad():
+        actual = model(input_ids).logits
+    assert torch.allclose(actual, expected, atol=3e-6, rtol=3e-5)
 
 
 def test_spinquant_no_had_preserves_full_precision_model_output():
@@ -64,6 +132,24 @@ def test_spinquant_no_had_preserves_full_precision_model_output():
     with torch.no_grad():
         actual = model(input_ids).logits
     assert torch.allclose(actual, expected, atol=2e-6, rtol=2e-5)
+
+
+def test_spinquant_r4_preserves_full_precision_model_output():
+    torch.manual_seed(0)
+    model = _tiny_llama()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    with torch.no_grad():
+        expected = model(input_ids).logits
+
+    apply_spinquant_no_had(model, _tiny_rotations())
+    apply_spinquant_r4(model)
+
+    with torch.no_grad():
+        actual = model(input_ids).logits
+    assert torch.allclose(actual, expected, atol=2e-6, rtol=2e-5)
+    down = model.model.layers[0].mlp.down_proj
+    values = torch.randn(2, 3, model.config.intermediate_size)
+    assert not torch.equal(down.assignment_input(values), values)
 
 
 def test_spinquant_loader_accepts_official_rotation_keys(tmp_path):
@@ -195,3 +281,77 @@ def test_spinquant_scheme_helpers_match_main_builder():
             weights, bits=3, group_size=5, scheme='asymmetric'
         ).quantize(),
     )
+
+
+def test_cayley_update_preserves_orthogonality():
+    rotation = _orthogonal(8, 4)
+    gradient = torch.randn_like(rotation)
+    updated = cayley_update(rotation, gradient, step_size=0.05)
+    assert torch.allclose(
+        updated.t().matmul(updated),
+        torch.eye(8, dtype=updated.dtype),
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+
+def test_spinquant_assignment_uses_actual_quantized_activation():
+    model = _tiny_llama()
+    apply_spinquant_no_had(model, _tiny_rotations())
+    add_spinquant_activation_quantization(
+        model,
+        bits=8,
+        symmetric=False,
+        group_size=-1,
+    )
+    module = model.model.layers[0].self_attn.q_proj
+    values = torch.randn(2, 3, 8)
+    assert torch.equal(
+        module.assignment_input(values),
+        module.quantized_assignment_input(values),
+    )
+    assert not torch.equal(module.assignment_input(values), values)
+    assert module(values).shape == (2, 3, 8)
+
+
+def test_spinquant_activation_scope_matches_official_code():
+    model = _tiny_llama()
+    apply_spinquant_no_had(model, _tiny_rotations())
+    add_spinquant_activation_quantization(
+        model,
+        bits=4,
+        symmetric=False,
+        group_size=4,
+        v_bits=4,
+        v_symmetric=True,
+    )
+
+    attention = model.model.layers[0].self_attn
+    mlp = model.model.layers[0].mlp
+    assert isinstance(attention.q_proj, ActivationQuantizedLinear)
+    assert attention.q_proj.activation_group_size == 4
+    assert attention.o_proj.activation_group_size == 2
+    assert attention.v_proj.output_bits == 4
+    assert attention.v_proj.output_group_size == 2
+    assert attention.v_proj.output_symmetric is True
+    assert mlp.down_proj.activation_group_size == 4
+    assert type(model.lm_head) is torch.nn.Linear
+
+
+@pytest.mark.parametrize("model_factory", MODEL_FACTORIES)
+@pytest.mark.parametrize("group_size", [-1, 2])
+def test_spinquant_post_rope_r3_k_cache_path_runs(model_factory, group_size):
+    model = model_factory()
+    apply_spinquant_no_had(model, _rotations_for(model))
+    apply_spinquant_r4(model)
+    add_spinquant_k_cache_quantization(
+        model,
+        bits=4,
+        symmetric=False,
+        group_size=group_size,
+    )
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    with torch.no_grad():
+        logits = model(input_ids, use_cache=True).logits
+    assert logits.shape == (1, 4, 32)
+    assert model.model.layers[0].self_attn._spinquant_qk_patched

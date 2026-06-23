@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import os
 
-from runtime_utils import load_runtime_env
-from wandb_utils import (
+from baseline_utils.runtime import load_runtime_env
+from baseline_utils.wandb import (
     collect_lm_eval_summary_wandb_metrics,
     collect_ppl_wandb_metrics,
     load_json,

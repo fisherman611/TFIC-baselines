@@ -10,13 +10,40 @@ Implemented:
 - `flatquant_diag`: a fixed-grid-compatible ablation using per-channel
   diagonal scale `c` and optional weight clipping.
 
-Not implemented:
+Implemented in the repository-native assignment pipeline:
 
-- Kronecker affine transforms `P = P1 x P2`
+- normalized per-linear Kronecker affine transforms `P = P1 x P2`
 - online activation transforms `XP`
-- K/V cache transforms
-- activation and KV clipping/quantization
-- FlatQuant model wrappers and reparameterization
+- transformed weights `W P^-T`
+- transformed statistics shared by all assignment methods
+- transform-aware checkpoint manifests and evaluation loading
+- official `ln_trans`, `o_trans`, `vcache_trans`, and `kcache_trans` loading
+- post-RoPE Q/K transform and Q/K/V cache fake quantization for LlamaAttention
+- separate learned min/max clipping for transformed weights and activations
+- learned Q/K/V cache clipping from official artifacts
+- class-dispatched LLaMA, Qwen2, and Mistral attention adapters
+- strict seven-projection artifact validation and multi-family tiny-model tests
+
+Still not implemented:
+
+- block-wise training of FlatQuant matrices
+- real-model parity benchmark against official calibrated checkpoints
+
+## Multi-model requirements
+
+- Keep the current `LlamaAttention` path as the numerical reference for
+  LLaMA-3.1-8B.
+- Add a `Qwen2Attention` path that preserves projection biases,
+  `sliding_window`, Qwen2 RoPE, GQA, and the official FlatQuant Qwen artifact
+  key layout.
+- Add a `MistralAttention` path that preserves sliding-window attention,
+  Mistral RoPE, GQA, and cache updates.
+- Select model wrappers from the actual module class/config, not from the model
+  name string.
+- Require complete per-layer transforms for all seven target projections and
+  reject partially compatible artifacts.
+- Add tiny-config parity, low-bit cache, and checkpoint round-trip tests for
+  LLaMA, Qwen2, and Mistral before real-model calibration.
 
 ## Why Full FlatQuant Needs Model Integration
 

@@ -121,6 +121,53 @@ Experiments will be conducted on the following LLMs:
 
 The recommended starting model is **LLaMA-3.1-8B**, since it can be used to debug and stabilize the full experimental pipeline before scaling to the other models.
 
+#### 5.1 Architecture compatibility requirements
+
+Every grid and assignment cell must start from a fresh base model. Grid
+artifacts are model-specific and must not be reused across these architectures.
+Use the same C4 document indices and random seed for fairness, but tokenize the
+documents with each model's own tokenizer.
+
+Common requirements for all three models:
+
+- Pin the exact Hugging Face model ID and revision in every run. In
+  particular, resolve whether `Mistral-V3-7B` means
+  `mistralai/Mistral-7B-v0.3` before producing artifacts.
+- Discover dimensions from `model.config`; do not hard-code hidden size,
+  intermediate size, head count, KV-head count, or head dimension.
+- Preserve GQA correctly: Q uses `num_attention_heads`, while K/V use
+  `num_key_value_heads`.
+- Preserve projection biases when fusing FlatQuant or SpinQuant transforms.
+- Apply Q/K cache transforms after RoPE and before cache insertion.
+- Preserve the installed Transformers cache API, attention implementation
+  (`eager`, SDPA, or Flash Attention), generation with `use_cache=True`, and
+  checkpoint save/reload.
+- Validate that every block contains the expected `q_proj`, `k_proj`,
+  `v_proj`, `o_proj`, `up_proj`, `gate_proj`, and `down_proj` modules before
+  quantization.
+
+Model-specific work:
+
+- **LLaMA-3.1-8B**: use `LlamaAttention` as the reference implementation;
+  validate GQA, long-context RoPE, and the non-power-of-two FFN dimension used
+  by SpinQuant R4.
+- **Qwen2.5-7B**: add a `Qwen2Attention` adapter, preserve Q/K/V biases and its
+  `sliding_window` argument, support `Qwen2RMSNorm`, and validate FlatQuant's
+  official Qwen parameter layout. SpinQuant-had must fail closed until an
+  exact R4 factorization is available for the model's intermediate dimension.
+- **Mistral-V3-7B**: after pinning the exact model ID, add its
+  `MistralAttention` adapter, preserve sliding-window attention and cache
+  semantics, support `MistralRMSNorm`, and add native FlatQuant artifact
+  conversion because the current adapter is LLaMA-only.
+
+Required tests for each model family:
+
+- Tiny-config full-precision parity before and after FlatQuant transforms.
+- Tiny-config full-precision parity after SpinQuant R1/R2 and optional R4.
+- A/K/V low-bit forward with GQA and `use_cache=True`.
+- Save/reload parity for transform-aware checkpoints.
+- One real-model block smoke run before starting the full experiment matrix.
+
 ---
 
 ### 6. Calibration Setting

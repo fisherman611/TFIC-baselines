@@ -5,7 +5,7 @@ import torch
 
 from assignment_methods import FlexRoundAssignment, RTNAssignment
 from eigenflip.statistics.trust_region import LayerStats
-from run_quantization_baseline import assignment_needs_h
+from scripts.run_quantization_baseline import assignment_needs_h
 from tests.examples import (
     toy_awq_grids,
     toy_correlated_stats,

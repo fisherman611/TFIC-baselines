@@ -29,8 +29,10 @@ from eigenflip.encoders.tfic_fast import TFICEncoder as TFICEncoderFast
 from eigenflip.quantization.awq_scales import scales_from_awq_run
 
 try:
-    from calibration_utils import (get_c4_calibration_data,
-                                   get_wikitext2_calibration_data)
+    from baseline_utils.calibration import (
+        get_c4_calibration_data,
+        get_wikitext2_calibration_data,
+    )
 except ImportError:
     get_c4_calibration_data = get_wikitext2_calibration_data = None
 
@@ -151,7 +153,7 @@ def main():
         model.to(target_device)
 
     if get_c4_calibration_data is None:
-        raise RuntimeError("calibration_utils.py not importable")
+        raise RuntimeError("baseline_utils.calibration is not importable")
     if args.calib_dataset == "c4":
         calib = get_c4_calibration_data(
             tok, n_samples=args.n_calib, seqlen=args.seqlen, seed=args.seed,

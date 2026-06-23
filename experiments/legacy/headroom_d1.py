@@ -52,9 +52,12 @@ import numpy as np
 import gc
 
 try:
-    from calibration_utils import get_c4_calibration_data, get_wikitext2_calibration_data
+    from baseline_utils.calibration import (
+        get_c4_calibration_data,
+        get_wikitext2_calibration_data,
+    )
 except ImportError:
-    print("⚠️  calibration_utils not found. Use --calib-dataset wikitext2-simple as fallback.")
+    print("⚠️  baseline_utils.calibration not found. Use --calib-dataset wikitext2-simple as fallback.")
     def get_c4_calibration_data(*a, **k):
         raise NotImplementedError("calibration_utils.py missing")
     def get_wikitext2_calibration_data(*a, **k):
