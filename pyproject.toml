@@ -28,6 +28,8 @@ dev = [
 [project.scripts]
 eval-ppl = "scripts.eval_ppl:main"
 generate-awq-scales = "scripts.generate_awq_scales:main"
+train-flatquant = "scripts.train_flatquant:main"
+check-flatquant-parity = "scripts.check_flatquant_parity:main"
 lm-eval-smoke = "scripts.lm_eval_smoke:main"
 log-wandb-results = "scripts.log_wandb_results:main"
 quantize-baseline = "scripts.run_quantization_baseline:main"

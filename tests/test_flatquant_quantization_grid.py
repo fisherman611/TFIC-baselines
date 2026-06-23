@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import torch
+import pytest
 from tqdm import tqdm
 
 
@@ -135,6 +136,31 @@ def test_flatquant_diag_scheme_helpers_match_main_builder():
 
     assert torch.equal(symmetric.round_to_nearest()[0], symmetric_main.round_to_nearest()[0])
     assert torch.equal(asymmetric.round_to_nearest()[0], asymmetric_main.round_to_nearest()[0])
+
+
+def test_flatquant_grid_is_finite_for_zero_fp16_groups():
+    for scheme in SCHEMES:
+        grid = build_flatquant_diag_quantization_grid(
+            torch.zeros(2, 4, dtype=torch.float16),
+            torch.ones(4, dtype=torch.float16),
+            bits=4,
+            group_size=4,
+            scheme=scheme,
+        )
+        codes, dequantized = grid.round_to_nearest()
+        assert torch.isfinite(grid.scale).all()
+        assert torch.isfinite(codes).all()
+        assert torch.isfinite(dequantized).all()
+
+
+@pytest.mark.parametrize(
+    "scales",
+    [torch.tensor([1.0, 0.0, 1.0, 1.0, 1.0]), torch.full((5,), float("nan"))],
+)
+def test_flatquant_grid_rejects_invalid_scales(scales):
+    weights, _, _ = flatquant_toy_inputs()
+    with pytest.raises(ValueError, match="finite and positive"):
+        build_flatquant_diag_quantization_grid(weights, scales, bits=4, group_size=4)
 
 
 def _demo_flatquant_grid_logic():

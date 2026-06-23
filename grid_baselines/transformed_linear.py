@@ -14,6 +14,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _dtype_safe_eps(reference: torch.Tensor, eps: float) -> torch.Tensor:
+    floor = torch.as_tensor(eps, device=reference.device, dtype=reference.dtype)
+    if floor == 0:
+        floor = torch.nextafter(
+            torch.zeros((), device=reference.device, dtype=reference.dtype),
+            torch.ones((), device=reference.device, dtype=reference.dtype),
+        )
+    return floor
+
+
 def fake_quantize_activation(
     values: torch.Tensor,
     *,
@@ -23,7 +33,7 @@ def fake_quantize_activation(
     clip_ratio: float = 1.0,
     clip_factor_max: torch.Tensor | None = None,
     clip_factor_min: torch.Tensor | None = None,
-    eps: float = 1e-8,
+    eps: float = 1e-5,
 ) -> torch.Tensor:
     """Per-token fake quantization used by FlatQuant and SpinQuant."""
 
@@ -55,7 +65,11 @@ def fake_quantize_activation(
             bound = torch.maximum(lower.abs(), upper)
         else:
             bound = grouped.abs().amax(dim=-1, keepdim=True) * clip_ratio
-        scale = (bound / qmax).clamp_min(eps)
+        scale = torch.where(
+            bound == 0,
+            torch.ones_like(bound),
+            bound.clamp_min(_dtype_safe_eps(bound, eps)) / qmax,
+        )
         quantized = torch.round(grouped / scale).clamp(qmin, qmax) * scale
     else:
         qmin = 0
@@ -71,7 +85,12 @@ def fake_quantize_activation(
         else:
             lower = lower * clip_ratio
             upper = upper * clip_ratio
-        scale = ((upper - lower) / qmax).clamp_min(eps)
+        width_range = upper - lower
+        scale = torch.where(
+            width_range == 0,
+            torch.ones_like(width_range),
+            width_range.clamp_min(_dtype_safe_eps(width_range, eps)) / qmax,
+        )
         zero = torch.round(-lower / scale).clamp(qmin, qmax)
         codes = torch.round(grouped / scale + zero).clamp(qmin, qmax)
         quantized = (codes - zero) * scale

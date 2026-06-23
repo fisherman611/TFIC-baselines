@@ -318,44 +318,53 @@ or:
 }
 ```
 
-Scope note: `flatquant_diag` is not the full FlatQuant baseline. Full FlatQuant
-also learns non-diagonal Kronecker affine transformations and applies online
-activation/KV-cache transforms. Those are not representable as the independent
-per-coordinate grid expected by the current assignment methods and
-saved-HF-checkpoint runner. If a params file only contains affine matrices and
-no per-channel scale vector, the runner raises an explicit error instead of
-silently producing an invalid checkpoint.
+Scope note: `flatquant_diag` is not the full FlatQuant baseline. Use
+`grid=flatquant` for non-diagonal Kronecker transforms, online activation
+transforms, transformed assignment statistics, and transform-aware checkpoint
+loading. The diagonal path deliberately rejects affine-only artifacts instead
+of silently treating them as scale vectors.
 
 ---
 
 ### Full FlatQuant Implementation Plan
 
-Status: planned.
+Status: runtime integration and repository-native calibration trainer
+implemented. Real-model parity is exposed through
+`scripts/check_flatquant_parity.py`.
 
-To make the main `FlatQuant` grid baseline match the official implementation,
-the current fixed-grid runner needs a model-level integration rather than only a
-weight-grid builder.
+The main `flatquant` path uses model-level online activation transforms,
+transformed weights, transformed assignment statistics, learned clipping, and
+transform-aware checkpoint loading. `scripts/train_flatquant.py` freezes base
+weights and performs sequential block-wise MSE optimization over calibration
+data for Kronecker factors, diagonal scales, and weight/activation clipping.
 
-Planned steps:
+Implemented components:
 
-1. Add model wrappers for LLaMA/Qwen-like attention and MLP modules, following
+1. Model wrappers for LLaMA/Qwen/Mistral attention and MLP modules, following
    the official structure: `ln_trans`, `up_gate_trans`, `down_trans`,
    `kcache_trans`, `vcache_trans`, and `o_trans`.
-2. Implement Kronecker/SVD transform modules and load official
+2. Kronecker transform modules and official
    `flat_matrices.pth` keys. These transforms must be applied to activations in
    forward and to weights during reparameterization.
-3. Add activation and KV-cache quantization/clipping support. Official
+3. Activation and KV-cache quantization/clipping support. Official
    FlatQuant uses per-token activation quantization plus learnable activation
    clipping, and separate K/V cache quantizers.
-4. Add a `flatquant_reparameterize` path that turns the calibrated model into a
+4. A reparameterized path that turns the calibrated model into a
    transformed-weight model, fuses diagonal scales into LayerNorm where
    applicable, and only then exposes transformed linear weights to assignment
    methods.
-5. Add a FlatQuant-aware stats collector. GPTQ/GPTAQ/TFIC statistics must be
+5. A FlatQuant-aware stats collector. GPTQ/GPTAQ/TFIC statistics are
    collected from the transformed activation stream, not from the original
    `X`.
-6. Keep `flatquant_diag` as a separate ablation baseline so results do not
+6. `flatquant_diag` remains a separate ablation baseline so results do not
    conflate diagonal scaling with full FlatQuant.
+
+Scope boundary: the repository-native trainer optimizes W/A transforms and
+clipping for the project's common assignment grid. Exact official W4A4KV4
+reproduction should load official calibrated artifacts because training
+`kcache_trans` and `vcache_trans` remains owned by the upstream FlatQuant
+workflow. The parity command checks unquantized logits on the requested real
+model before benchmark quantization.
 
 ---
 

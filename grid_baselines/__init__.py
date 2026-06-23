@@ -15,10 +15,12 @@ from .flatquant_quantization_grid import (
 from .flatquant_model import (
     apply_flatquant_attention_transforms,
     apply_flatquant_transforms,
+    flatquant_model_identity,
     load_flatquant_attention_clips,
     load_flatquant_attention_transforms,
     load_flatquant_transforms,
     serialize_flatquant_transforms,
+    validate_flatquant_artifact_identity,
 )
 from .neuqi_quantization_grid import (
     NeUQIQuantizationGrid,
@@ -69,11 +71,13 @@ __all__ = [
     "AWQQuantizationGrid",
     "FlatQuantDiagQuantizationGrid",
     "apply_flatquant_transforms",
+    "flatquant_model_identity",
     "apply_flatquant_attention_transforms",
     "load_flatquant_attention_clips",
     "load_flatquant_attention_transforms",
     "load_flatquant_transforms",
     "serialize_flatquant_transforms",
+    "validate_flatquant_artifact_identity",
     "NeUQIQuantizationGrid",
     "VanillaQuantizationGrid",
     "build_asymmetric_neuqi_quantization_grid",

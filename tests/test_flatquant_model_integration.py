@@ -22,6 +22,7 @@ from grid_baselines.flatquant_model import (
     serialize_flatquant_transforms,
 )
 from grid_baselines.transformed_linear import KroneckerTransform
+from grid_baselines.transformed_linear import fake_quantize_activation
 
 
 class _ToyModel(nn.Module):
@@ -147,6 +148,16 @@ def test_flatquant_affine_transform_preserves_full_precision_linear_output():
     actual = model(values)
 
     assert torch.allclose(actual, expected, atol=1e-10, rtol=1e-10)
+
+
+@pytest.mark.parametrize("symmetric", [False, True])
+def test_flatquant_activation_quantization_is_finite_for_zero_fp16(symmetric):
+    output = fake_quantize_activation(
+        torch.zeros(2, 3, 8, dtype=torch.float16),
+        bits=4,
+        symmetric=symmetric,
+    )
+    assert torch.isfinite(output).all()
 
 
 @pytest.mark.parametrize("model_factory", MODEL_FACTORIES)

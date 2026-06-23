@@ -24,10 +24,18 @@ Implemented in the repository-native assignment pipeline:
 - class-dispatched LLaMA, Qwen2, and Mistral attention adapters
 - strict seven-projection artifact validation and multi-family tiny-model tests
 
-Still not implemented:
+Implemented:
 
-- block-wise training of FlatQuant matrices
-- real-model parity benchmark against official calibrated checkpoints
+- repository-native block-wise training of W/A Kronecker matrices, diagonal
+  scales, and clipping on calibration data
+- model-bound artifact metadata and quantization-setting validation
+- real-model unquantized parity harness
+
+Still requiring upstream artifacts for exact official reproduction:
+
+- training the dedicated `kcache_trans`/`vcache_trans` parameters used by the
+  official W4A4KV4 preset
+- published-checkpoint PPL parity numbers on full 7B/8B models
 
 ## Multi-model requirements
 

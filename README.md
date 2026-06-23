@@ -82,6 +82,14 @@ online, and assignment statistics are collected after that transform. Official
 cache fake quantization. The saved manifest restores the online path in PPL
 and lm-eval.
 
+`python -m scripts.train_flatquant` performs repository-native block-wise
+calibration optimization. Base-model weights remain frozen; only Kronecker
+factors, diagonal scales, and weight/activation clipping parameters are
+optimized against the floating-point block output. Generated artifacts contain
+structural model identity and quantization settings, which the runner validates
+before use. Official `flat_matrices.pth` files remain supported for experiments
+that need learned `kcache_trans`/`vcache_trans` in addition to W/A transforms.
+
 `flatquant_diag` remains a fixed-grid-compatible ablation of FlatQuant: the
 learned pair-wise per-channel scale `c` and optional learned weight clipping
 threshold `alpha_w`. It consumes params produced elsewhere through
@@ -334,7 +342,32 @@ DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="
 
 ## Single-Cell Commands
 
-Full affine FlatQuant + GPTQ:
+Train FlatQuant transforms on calibration data:
+
+```bash
+uv run python -m scripts.train_flatquant \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --weight-bits 4 \
+  --activation-bits 4 \
+  --weight-symmetric \
+  --activation-symmetric \
+  --weight-group-size 128 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --epochs 15 \
+  --batch-size 4 \
+  --learning-rate 5e-3 \
+  --out ./outputs/flatquant/llama31_8b_flatquant_w4a4_c4n128.pt
+```
+
+This command follows the paper's block-wise MSE optimization while retaining
+the project's common group-size-128 weight grid. The official FlatQuant
+W4A4KV4 preset instead uses per-output-channel weight quantization and
+separately learned K/V-cache transforms. Use an official `flat_matrices.pth`
+artifact when reproducing that exact deployment setting.
+
+Full affine FlatQuant + GPTQ on the project grid:
 
 ```bash
 uv run python -m scripts.run_quantization_baseline \
@@ -344,10 +377,21 @@ uv run python -m scripts.run_quantization_baseline \
   --grid flatquant \
   --flatquant-transforms-pt ./outputs/flatquant/llama31_8b_transforms.pt \
   --assignment gptq \
-  --scheme asymmetric \
+  --scheme symmetric \
   --bits 4 \
   --activation-bits 4 \
+  --activation-symmetric \
   --group-size 128
+```
+
+Verify that an artifact preserves the real model before quantization:
+
+```bash
+uv run python -m scripts.check_flatquant_parity \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --flatquant-transforms-pt ./outputs/flatquant/llama31_8b_flatquant_w4a4_c4n128.pt \
+  --atol 5e-3 \
+  --out ./outputs/flatquant/llama31_8b_parity.json
 ```
 
 The normalized transform artifact maps each linear module to

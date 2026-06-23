@@ -41,6 +41,7 @@ from grid_baselines import (
     add_spinquant_k_cache_quantization,
     add_spinquant_activation_quantization,
     apply_flatquant_transforms,
+    validate_flatquant_artifact_identity,
     apply_spinquant_no_had,
     build_awq_quantization_grid,
     build_flatquant_diag_quantization_grid,
@@ -378,6 +379,14 @@ def parse_args():
             "Required by --grid flatquant."
         ),
     )
+    parser.add_argument(
+        "--allow-unidentified-flatquant-artifact",
+        action="store_true",
+        help=(
+            "Allow legacy normalized FlatQuant artifacts without model identity. "
+            "Official numeric-key flat_matrices.pth files remain accepted."
+        ),
+    )
     parser.add_argument("--activation-bits", type=int, default=16, choices=[4, 8, 16])
     parser.add_argument(
         "--activation-symmetric",
@@ -573,6 +582,19 @@ def main():
             raise ValueError(
                 "--grid flatquant requires --flatquant-transforms-pt"
             )
+        validate_flatquant_artifact_identity(
+            args.flatquant_transforms_pt,
+            model,
+            require_identity=not args.allow_unidentified_flatquant_artifact,
+            requested_quantization={
+                "weight_bits": args.bits,
+                "activation_bits": args.activation_bits,
+                "weight_symmetric": args.scheme == "symmetric",
+                "activation_symmetric": args.activation_symmetric,
+                "weight_group_size": args.group_size,
+                "activation_group_size": args.activation_group_size,
+            },
+        )
         flatquant_transforms, flatquant_clips = load_flatquant_transforms(
             args.flatquant_transforms_pt
         )
@@ -793,6 +815,17 @@ def main():
         transform_file = "flatquant_transforms.pt"
         torch.save(
             {
+                "format": "tfic-flatquant",
+                "format_version": 1,
+                "model": transform_model_metadata(model),
+                "training": {
+                    "weight_bits": args.bits,
+                    "activation_bits": args.activation_bits,
+                    "weight_symmetric": args.scheme == "symmetric",
+                    "activation_symmetric": args.activation_symmetric,
+                    "weight_group_size": args.group_size,
+                    "activation_group_size": args.activation_group_size,
+                },
                 "layers": serialize_flatquant_transforms(
                     flatquant_transforms,
                     flatquant_clips,

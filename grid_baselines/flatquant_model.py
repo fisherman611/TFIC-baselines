@@ -27,6 +27,64 @@ from .transformed_linear import (
 )
 
 
+def flatquant_model_identity(model: nn.Module) -> dict[str, int | str]:
+    attention = model.model.layers[0].self_attn
+    return {
+        "model_type": str(model.config.model_type),
+        "hidden_size": int(model.config.hidden_size),
+        "intermediate_size": int(model.config.intermediate_size),
+        "num_hidden_layers": int(model.config.num_hidden_layers),
+        "num_attention_heads": int(model.config.num_attention_heads),
+        "num_key_value_heads": int(model.config.num_key_value_heads),
+        "head_dim": int(attention.head_dim),
+    }
+
+
+def validate_flatquant_artifact_identity(
+    path: str | Path,
+    model: nn.Module,
+    *,
+    require_identity: bool = True,
+    requested_quantization: dict | None = None,
+) -> None:
+    raw = torch.load(path, map_location="cpu")
+    if not isinstance(raw, dict):
+        raise ValueError("FlatQuant parameter file must contain a dict")
+    expected = raw.get("model")
+    is_official = any(
+        isinstance(key, (int, str)) and str(key).isdigit() for key in raw
+    )
+    if not isinstance(expected, dict):
+        if require_identity and not is_official:
+            raise ValueError(
+                "normalized FlatQuant artifacts must include top-level model identity"
+            )
+        return
+    actual = flatquant_model_identity(model)
+    mismatches = [
+        f"{key}: artifact={value!r}, model={actual.get(key)!r}"
+        for key, value in expected.items()
+        if key in actual and actual[key] != value
+    ]
+    if mismatches:
+        raise ValueError(
+            "FlatQuant artifact does not match the loaded model: "
+            + "; ".join(mismatches)
+        )
+    training = raw.get("training")
+    if isinstance(training, dict) and requested_quantization:
+        quantization_mismatches = [
+            f"{key}: artifact={training[key]!r}, requested={value!r}"
+            for key, value in requested_quantization.items()
+            if key in training and training[key] != value
+        ]
+        if quantization_mismatches:
+            raise ValueError(
+                "FlatQuant artifact quantization setting mismatch: "
+                + "; ".join(quantization_mismatches)
+            )
+
+
 @dataclass
 class FlatQuantLinearSpec:
     input_transform: KroneckerTransform

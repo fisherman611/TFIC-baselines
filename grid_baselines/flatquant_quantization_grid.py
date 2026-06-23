@@ -19,6 +19,16 @@ from dataclasses import dataclass
 import torch
 
 
+def _dtype_safe_eps(reference: torch.Tensor, eps: float) -> torch.Tensor:
+    floor = torch.as_tensor(eps, device=reference.device, dtype=reference.dtype)
+    if floor == 0:
+        floor = torch.nextafter(
+            torch.zeros((), device=reference.device, dtype=reference.dtype),
+            torch.ones((), device=reference.device, dtype=reference.dtype),
+        )
+    return floor
+
+
 @dataclass
 class FlatQuantDiagQuantizationGrid:
     """FlatQuant diagonal-scale group-wise uniform grid for a weight tensor."""
@@ -143,7 +153,7 @@ def build_flatquant_diag_quantization_grid(
     weight_clip: float | torch.Tensor = 1.0,
     weight_clip_max: torch.Tensor | None = None,
     weight_clip_min: torch.Tensor | None = None,
-    eps: float = 1e-8,
+    eps: float = 1e-5,
 ) -> FlatQuantDiagQuantizationGrid:
     """Build a FlatQuant diagonal-scale fixed grid for ``weights``.
 
@@ -177,8 +187,10 @@ def build_flatquant_diag_quantization_grid(
             "expected flatquant_scales with "
             f"{in_features} values, got {scales.shape[1]}"
         )
-    if torch.any(scales == 0):
-        raise ValueError("flatquant_scales must be non-zero")
+    if not torch.isfinite(scales).all() or torch.any(scales <= 0):
+        raise ValueError("flatquant_scales must be finite and positive")
+    if not torch.isfinite(weights).all():
+        raise ValueError("weights must contain only finite values")
 
     clip_value = float(torch.as_tensor(weight_clip).detach().cpu().reshape(-1)[0].item())
     scaled_weights = weights * scales
@@ -210,6 +222,7 @@ def build_flatquant_diag_quantization_grid(
         padded_scales = scales
 
     grouped = padded_scaled.reshape(rows, n_groups, group_size)
+    floor = _dtype_safe_eps(grouped, eps)
     if scheme == "symmetric":
         qmin = -(2 ** (bits - 1))
         qmax = 2 ** (bits - 1) - 1
@@ -218,7 +231,7 @@ def build_flatquant_diag_quantization_grid(
             scheme=scheme,
             weight_clip=clip_value,
         )
-        scale_q_group = (absmax / qmax).clamp_min(eps)
+        scale_q_group = absmax.clamp_min(floor) / qmax
         zero_point_group = torch.zeros_like(scale_q_group)
     else:
         qmin = 0
@@ -228,7 +241,7 @@ def build_flatquant_diag_quantization_grid(
             scheme=scheme,
             weight_clip=clip_value,
         )
-        scale_q_group = ((wmax - wmin) / qmax).clamp_min(eps)
+        scale_q_group = (wmax - wmin).clamp_min(floor) / qmax
         zero_point_group = torch.round(-wmin / scale_q_group).clamp(qmin, qmax)
 
     scale_q = _expand_group(scale_q_group, group_size, padded_in)
@@ -260,7 +273,7 @@ def build_symmetric_flatquant_diag_quantization_grid(
     group_size: int,
     *,
     weight_clip: float | torch.Tensor = 1.0,
-    eps: float = 1e-8,
+    eps: float = 1e-5,
 ) -> FlatQuantDiagQuantizationGrid:
     """Build a symmetric FlatQuant diagonal-scale fixed grid."""
 
@@ -283,7 +296,7 @@ def build_asymmetric_flatquant_diag_quantization_grid(
     group_size: int,
     *,
     weight_clip: float | torch.Tensor = 1.0,
-    eps: float = 1e-8,
+    eps: float = 1e-5,
 ) -> FlatQuantDiagQuantizationGrid:
     """Build an asymmetric FlatQuant diagonal-scale fixed grid."""
 
