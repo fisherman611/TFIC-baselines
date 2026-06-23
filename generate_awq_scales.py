@@ -72,6 +72,31 @@ class AWQScaleAccumulator:
         self.samples = []
 
 
+class InvalidCalibrationTokenIds(ValueError):
+    """Raised before CUDA when token IDs cannot index model embeddings."""
+
+
+def validate_calibration_token_ids(
+    input_ids: torch.Tensor,
+    *,
+    embedding_vocab_size: int,
+    model_path: str,
+) -> None:
+    if input_ids.numel() == 0:
+        raise InvalidCalibrationTokenIds("calibration input_ids is empty")
+
+    min_id = int(input_ids.min().item())
+    max_id = int(input_ids.max().item())
+    if min_id < 0 or max_id >= embedding_vocab_size:
+        raise InvalidCalibrationTokenIds(
+            "calibration token IDs are incompatible with the model embeddings: "
+            f"min_id={min_id}, max_id={max_id}, embedding_vocab_size="
+            f"{embedding_vocab_size}, model={model_path!r}. This usually means a "
+            "calibration cache created with a different tokenizer was reused. "
+            "Regenerate calibration data with the current tokenizer."
+        )
+
+
 def load_calibration(tokenizer, args):
     if get_c4_calibration_data is None:
         raise RuntimeError("calibration_utils.py is not importable")
@@ -148,6 +173,10 @@ def main():
             target_device = args.input_device
         model.to(target_device)
     input_device = _resolve_input_device(model, args.input_device)
+    input_embeddings = model.get_input_embeddings()
+    if input_embeddings is None or not hasattr(input_embeddings, "num_embeddings"):
+        raise RuntimeError("model does not expose an input embedding vocabulary size")
+    embedding_vocab_size = int(input_embeddings.num_embeddings)
 
     calibration = load_calibration(tokenizer, args)
     layers = [
@@ -196,9 +225,15 @@ def main():
         for sample in tqdm(calibration, desc="  calib", leave=False):
             try:
                 if torch.is_tensor(sample):
-                    ids = sample.to(input_device, non_blocking=True)
+                    ids = sample
                     if ids.dim() == 1:
                         ids = ids.unsqueeze(0)
+                    validate_calibration_token_ids(
+                        ids,
+                        embedding_vocab_size=embedding_vocab_size,
+                        model_path=args.model_path,
+                    )
+                    ids = ids.to(input_device, non_blocking=True)
                     model(input_ids=ids, use_cache=False)
                     del ids
                 else:
@@ -208,13 +243,26 @@ def main():
                         truncation=True,
                         max_length=args.seqlen,
                     )
+                    validate_calibration_token_ids(
+                        encoded["input_ids"],
+                        embedding_vocab_size=embedding_vocab_size,
+                        model_path=args.model_path,
+                    )
                     encoded = {
                         key: value.to(input_device, non_blocking=True)
                         for key, value in encoded.items()
                     }
                     model(**encoded, use_cache=False)
                     del encoded
+            except InvalidCalibrationTokenIds:
+                raise
             except Exception as exc:
+                if "device-side assert" in str(exc).lower():
+                    raise RuntimeError(
+                        "CUDA device-side assert during calibration; aborting because "
+                        "the CUDA context is no longer safe to reuse. Re-run with "
+                        "CUDA_LAUNCH_BLOCKING=1 for the originating operation."
+                    ) from exc
                 print(f"  warning: skipped calibration sample due to {type(exc).__name__}: {exc}")
 
         for handle in handles:

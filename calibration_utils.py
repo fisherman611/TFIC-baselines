@@ -8,12 +8,29 @@ Provides standard calibration data loaders for:
 Key Feature: Random slicing within documents (standard GPTQ/AWQ practice)
 """
 
-import torch
+import hashlib
 import random
+import re
+
+import torch
 from datasets import load_dataset
 from typing import List
 import pickle
 from pathlib import Path
+
+
+def _tokenizer_cache_key(tokenizer) -> str:
+    """Return a stable cache namespace for tokenizer-dependent token data."""
+
+    name = str(getattr(tokenizer, "name_or_path", tokenizer.__class__.__name__))
+    try:
+        vocab_size = len(tokenizer)
+    except TypeError:
+        vocab_size = getattr(tokenizer, "vocab_size", "unknown")
+    identity = f"{tokenizer.__class__.__name__}|{name}|{vocab_size}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "tokenizer"
+    return f"{slug[:48]}_v{vocab_size}_{digest}"
 
 
 def get_c4_calibration_data(tokenizer, n_samples=128, seqlen=2048, seed=42, return_tensors=False, cache_dir="./calibration_cache"):
@@ -61,7 +78,11 @@ def get_c4_calibration_data(tokenizer, n_samples=128, seqlen=2048, seed=42, retu
     cache_path = Path(cache_dir)
     cache_path.mkdir(exist_ok=True)
 
-    cache_file = cache_path / f"c4_calib_n{n_samples}_len{seqlen}_seed{seed}_tensors{return_tensors}.pkl"
+    tokenizer_key = _tokenizer_cache_key(tokenizer)
+    cache_file = cache_path / (
+        f"c4_calib_{tokenizer_key}_n{n_samples}_len{seqlen}_seed{seed}_"
+        f"tensors{return_tensors}.pkl"
+    )
     if cache_file.exists():
         print(f"\n  📦 Loading from cache: {cache_file}")
         with open(cache_file, 'rb') as f:
@@ -172,7 +193,11 @@ def get_wikitext2_calibration_data(tokenizer, n_samples=128, seqlen=2048, seed=4
     cache_path = Path(cache_dir)
     cache_path.mkdir(exist_ok=True)
 
-    cache_file = cache_path / f"wikitext2_calib_n{n_samples}_len{seqlen}_seed{seed}_split{split}.pkl"
+    tokenizer_key = _tokenizer_cache_key(tokenizer)
+    cache_file = cache_path / (
+        f"wikitext2_calib_{tokenizer_key}_n{n_samples}_len{seqlen}_"
+        f"seed{seed}_split{split}.pkl"
+    )
     if cache_file.exists():
         print(f"\n  📦 Loading from cache: {cache_file}")
         with open(cache_file, 'rb') as f:
