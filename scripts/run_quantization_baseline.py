@@ -108,6 +108,7 @@ def build_assignment(name: str, args):
             block_size=args.gptaq_block_size,
             alpha=args.gptaq_alpha,
             rescomp_alpha=args.rescomp_alpha,
+            rescomp_mode=args.rescomp_mode,
             act_order=args.gptaq_act_order,
         )
     if name == "flexround":
@@ -519,7 +520,10 @@ def parse_args():
     parser.add_argument("--gptaq-block-size", type=int, default=128)
     parser.add_argument("--gptaq-alpha", type=float, default=0.25)
     parser.add_argument("--gptaq-act-order", action="store_true")
-    parser.add_argument("--rescomp-alpha", type=float, default=1.0)
+    parser.add_argument("--rescomp-alpha", type=float, default=0.25)
+    parser.add_argument(
+        "--rescomp-mode", choices=["auto", "org", "allw"], default="auto"
+    )
     parser.add_argument(
         "--gptaq-cache-dtype",
         choices=["float16", "bfloat16", "float32"],

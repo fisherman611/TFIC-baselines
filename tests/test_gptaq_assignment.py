@@ -180,9 +180,44 @@ def test_gptaq_rescomp_returns_expected_defaults():
         alpha=1.0,
     ).apply_to_grid(grid, stats)
 
-    assert info["rescomp_alpha"] == 1.0
+    assert info["rescomp_alpha"] == 0.25
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)
+
+
+@pytest.mark.parametrize(("bits", "expected_mode"), [(2, "org"), (3, "allw")])
+def test_gptaq_rescomp_auto_mode_matches_rescomp_bit_policy(bits, expected_mode):
+    grid = build_vanilla_quantization_grid(
+        torch.tensor(
+            [
+                [0.8240, -0.4536, 0.0149, 0.6145, 0.3457],
+                [0.1212, 0.8362, 0.2279, 0.6728, -0.8618],
+            ],
+            dtype=torch.float32,
+        ),
+        bits=bits,
+        group_size=5,
+        scheme="asymmetric",
+    )
+    quantized = paired_inputs()
+    reference = quantized + 0.25 * torch.flip(quantized, dims=[1])
+    stats = stats_from_paired_inputs(quantized, reference)
+
+    auto_output, auto_info = GPTAQResCompAssignment(
+        damp=0.01,
+        block_size=2,
+        rescomp_mode="auto",
+    ).apply_to_grid(grid, stats)
+    explicit_output, explicit_info = GPTAQResCompAssignment(
+        damp=0.01,
+        block_size=2,
+        rescomp_mode=expected_mode,
+    ).apply_to_grid(grid, stats)
+
+    assert auto_info["rescomp_mode"] == "auto"
+    assert explicit_info["rescomp_mode"] == expected_mode
+    assert torch.equal(auto_info["codes"], explicit_info["codes"])
+    assert torch.equal(auto_output, explicit_output)
 
 
 @pytest.mark.parametrize(
@@ -205,6 +240,7 @@ def test_gptaq_rejects_invalid_hyperparameters(kwargs, message):
         ({"block_size": 0}, "block_size"),
         ({"alpha": -1.0}, "alpha"),
         ({"rescomp_alpha": -1.0}, "rescomp_alpha"),
+        ({"rescomp_mode": "bad"}, "rescomp_mode"),
     ],
 )
 def test_gptaq_rescomp_rejects_invalid_hyperparameters(kwargs, message):

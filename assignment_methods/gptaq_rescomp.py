@@ -16,8 +16,9 @@ class GPTAQResCompAssignment:
         *,
         damp: float = 0.01,
         block_size: int = 128,
-        alpha: float = 1.0,
-        rescomp_alpha: float = 1.0,
+        alpha: float = 0.25,
+        rescomp_alpha: float = 0.25,
+        rescomp_mode: str = "auto",
         act_order: bool = False,
         work_dtype: torch.dtype = torch.float64,
     ):
@@ -33,10 +34,13 @@ class GPTAQResCompAssignment:
             )
         if work_dtype not in {torch.float32, torch.float64}:
             raise ValueError("work_dtype must be torch.float32 or torch.float64")
+        if rescomp_mode not in {"auto", "org", "allw"}:
+            raise ValueError(f"rescomp_mode must be auto, org, or allw, got {rescomp_mode}")
         self.damp = damp
         self.block_size = block_size
         self.alpha = alpha
         self.rescomp_alpha = rescomp_alpha
+        self.rescomp_mode = rescomp_mode
         self.act_order = act_order
         self.work_dtype = work_dtype
 
@@ -155,26 +159,60 @@ class GPTAQResCompAssignment:
                 block_codes[:, offset] = column_codes
 
                 error = (column - quantized_column) / factor_diagonal
-                update_slice = slice(offset, None)
-                block_weights[:, update_slice] -= (
-                    error.unsqueeze(1)
-                    * block_factor[offset, update_slice].unsqueeze(0)
-                )
-                block_weights[:, update_slice] += (
-                    column.unsqueeze(1)
-                    * block_correction[offset, update_slice].unsqueeze(0)
-                )
-                compensation_gap = original_column - column
-                block_weights[:, update_slice] += (
-                    compensation_gap.unsqueeze(1)
-                    * block_rescomp_correction[offset, update_slice].unsqueeze(0)
-                )
                 block_errors[:, offset] = error
+
+                levels = grid.qmax - grid.qmin + 1
+                is_org = self.rescomp_mode == "org" or (
+                    self.rescomp_mode == "auto" and levels <= 4
+                )
+
+                if is_org:
+                    update_slice = slice(offset, None)
+                    block_weights[:, update_slice] -= (
+                        error.unsqueeze(1)
+                        * block_factor[offset, update_slice].unsqueeze(0)
+                    )
+                    block_weights[:, update_slice] += (
+                        column.unsqueeze(1)
+                        * block_correction[offset, update_slice].unsqueeze(0)
+                    )
+                    compensation_gap = original_column - column
+                    block_weights[:, update_slice] += (
+                        compensation_gap.unsqueeze(1)
+                        * block_rescomp_correction[offset, update_slice].unsqueeze(0)
+                    )
+                else:
+                    update_slice = slice(offset + 1, None)
+                    if offset + 1 < count:
+                        block_weights[:, update_slice] -= (
+                            error.unsqueeze(1)
+                            * block_factor[offset, update_slice].unsqueeze(0)
+                        )
+                        block_weights[:, update_slice] += (
+                            column.unsqueeze(1)
+                            * block_correction[offset, update_slice].unsqueeze(0)
+                        )
+                        compensation_gap = original_column - column
+                        block_weights[:, update_slice] += (
+                            compensation_gap.unsqueeze(1)
+                            * block_rescomp_correction[offset, update_slice].unsqueeze(0)
+                        )
 
             codes[:, start:end] = block_codes
             if end < padded_in:
                 weights[:, end:] -= block_errors @ inverse_factor[start:end, end:]
                 compensated_weights = block_weights
+                
+                # Check mode using the same levels logic as above
+                levels = grid.qmax - grid.qmin + 1
+                is_org = self.rescomp_mode == "org" or (
+                    self.rescomp_mode == "auto" and levels <= 4
+                )
+                if not is_org:
+                    compensated_weights = torch.max(
+                        block_lower_bound, torch.min(compensated_weights, block_upper_bound)
+                    )
+
                 weights[:, end:] += compensated_weights @ correction[start:end, end:]
                 weights[:, end:] += (
                     original_weights[:, start:end] - compensated_weights
@@ -201,6 +239,7 @@ class GPTAQResCompAssignment:
             "block_size": self.block_size,
             "alpha": self.alpha,
             "rescomp_alpha": self.rescomp_alpha,
+            "rescomp_mode": self.rescomp_mode,
             "act_order": self.act_order,
             "changed_codes": changed_from_rtn,
         }
