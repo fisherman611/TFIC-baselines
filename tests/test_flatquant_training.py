@@ -154,8 +154,11 @@ def test_trained_artifact_is_loadable_by_runtime(tmp_path):
         config=config,
         device="cpu",
     )
+    attention = {}
+    if "self_attn.kcache_trans" in artifact:
+        attention["self_attn"] = artifact.pop("self_attn.kcache_trans")["matrix"]
     path = tmp_path / "trained.pt"
-    torch.save({"layers": artifact}, path)
+    torch.save({"layers": artifact, "attention": attention}, path)
     transforms, clips = load_flatquant_transforms(path)
     assert len(transforms) == 7
     assert len(clips) == 7
@@ -194,6 +197,6 @@ def test_flatquant_training_runs_on_real_transformers_decoder_block(model_factor
         config=config,
         device="cpu",
     )
-    assert len(artifact) == 7
+    assert len(artifact) == 8
     assert outputs[0].shape == inputs[0].shape
     assert torch.isfinite(torch.tensor(history)).all()

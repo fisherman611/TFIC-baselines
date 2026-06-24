@@ -110,7 +110,9 @@ class _Acc:
 
     @torch.no_grad()
     def to_stats(self, k, eps, keep_sigma, eig_device):
-        n = max(1, self.n)
+        if self.n == 0:
+            raise RuntimeError("No valid samples were collected for statistics.")
+        n = self.n
         mu = self.s1 / n
         diag_H = self.s2 / n
         if not self.need_H:
@@ -118,7 +120,7 @@ class _Acc:
             return LayerStats(d=self.d, mu_hat=james_stein_mean(mu),
                               diag_H=diag_H, diag_Sigma=diag_Sigma,
                               U_k=None, Lam_k=None, eps=eps,
-                              Sigma=None, backend="mean").build()
+                              Sigma=None, mu_empirical=mu, backend="mean").build()
         Sigma = self.G / n - torch.outer(mu, mu)
         Sigma = 0.5 * (Sigma + Sigma.t())
         diag_Sigma = torch.diagonal(Sigma).clone()
@@ -135,7 +137,8 @@ class _Acc:
         st = LayerStats(d=self.d, mu_hat=james_stein_mean(mu),
                         diag_H=diag_H, diag_Sigma=diag_Sigma,
                         U_k=U_k, Lam_k=Lam_k, eps=eps,
-                        Sigma=Sigma if keep_sigma else None, backend="gram").build()
+                        Sigma=Sigma if keep_sigma else None,
+                        mu_empirical=mu, backend="gram").build()
         if not keep_sigma:
             del Sigma
         return st
@@ -171,7 +174,9 @@ class _PairedAcc(_Acc):
 
     @torch.no_grad()
     def to_stats(self, k, eps, keep_sigma, eig_device):
-        n = max(1, self.n)
+        if self.n == 0:
+            raise RuntimeError("No valid samples were collected for statistics.")
+        n = self.n
         mu = self.s1 / n
         diag_H = self.s2 / n
         Sigma = self.G / n - torch.outer(mu, mu)
@@ -351,10 +356,7 @@ def collect_and_encode_awq_style(
                 tqdm(fp_samples, desc="  calib-quant", leave=False)
             ):
                 cursor["idx"] = idx
-                try:
-                    run_sample(sample)
-                except Exception:
-                    continue
+                run_sample(sample)
             for h in handles:
                 h.remove()
             fp_inputs.clear()
@@ -371,10 +373,7 @@ def collect_and_encode_awq_style(
 
             # ONE calibration pass for the whole batch (AWQ-style)
             for sample in tqdm(calib, desc="  calib", leave=False):
-                try:
-                    run_sample(sample)
-                except Exception:
-                    continue
+                run_sample(sample)
 
             for h in handles:
                 h.remove()

@@ -26,8 +26,11 @@ class SpinQuantTrainingConfig:
     activation_symmetric: bool = False
     activation_group_size: int = -1
     activation_clip_ratio: float = 1.0
+    v_bits: int = 16
+    v_symmetric: bool = False
+    v_clip_ratio: float = 1.0
     r1_steps: int = 100
-    r2_steps: int = 100
+    r2_steps: int | None = None
     batch_size: int = 4
     learning_rate: float = 1e-3
     objective: str = "cross_entropy"
@@ -41,14 +44,10 @@ def identity_spinquant_rotations(
 ) -> SpinQuantRotations:
     if num_layers <= 0:
         raise ValueError("num_layers must be positive")
-    
-    def random_orthogonal(n):
-        q, _ = torch.linalg.qr(torch.randn(n, n, dtype=torch.float64))
-        return q
 
     return SpinQuantRotations(
-        R1=random_orthogonal(hidden_size),
-        R2={idx: random_orthogonal(head_dim) for idx in range(num_layers)},
+        R1=torch.eye(hidden_size, dtype=torch.float64),
+        R2={idx: torch.eye(head_dim, dtype=torch.float64) for idx in range(num_layers)},
     )
 
 
@@ -242,6 +241,13 @@ class _SpinQuantTrainableLinear(nn.Module):
         self.head_dim = head_dim
         self.in_features = source.in_features
         self.out_features = source.out_features
+
+        from .transformed_linear import SpinQuantHadamardLinear
+        self.has_hadamard = isinstance(source, SpinQuantHadamardLinear)
+        if self.has_hadamard:
+            self.register_buffer("had_k", source.had_k.detach().clone())
+            self.k = source.k
+
         self.register_buffer("weight", source.weight.detach().clone())
         if source.bias is None:
             self.bias = None
@@ -277,6 +283,10 @@ class _SpinQuantTrainableLinear(nn.Module):
         )
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "has_hadamard", False) and self.role == "down":
+            from .transformed_linear import apply_factorized_hadamard
+            values = apply_factorized_hadamard(values, had_k=self.had_k, k=self.k)
+
         group_size = self.config.activation_group_size
         if self.role == "o":
             group_size = self.head_dim
@@ -288,7 +298,18 @@ class _SpinQuantTrainableLinear(nn.Module):
             clip_ratio=self.config.activation_clip_ratio,
         )
         weight, bias = self._weight_and_bias()
-        return F.linear(values, weight, bias)
+        output = F.linear(values, weight, bias)
+
+        if self.role == "v":
+            output = fake_quantize_activation(
+                output,
+                bits=self.config.v_bits,
+                symmetric=self.config.v_symmetric,
+                group_size=self.head_dim,
+                clip_ratio=self.config.v_clip_ratio,
+            )
+
+        return output
 
 
 def install_spinquant_training_wrappers(
@@ -338,6 +359,22 @@ def install_spinquant_training_wrappers(
                     head_dim=head_dim,
                 ),
             )
+    import types
+    from grid_baselines.spinquant_quantization_grid import _spinquant_attention_forward, _model_layers
+    from grid_baselines.flatquant_model import resolve_attention_runtime
+    for layer in _model_layers(model):
+        attention = layer.self_attn
+        resolve_attention_runtime(attention)
+        attention._spinquant_k_bits = config.activation_bits
+        attention._spinquant_k_symmetric = config.activation_symmetric
+        attention._spinquant_k_group_size = -1
+        attention._spinquant_k_clip_ratio = config.activation_clip_ratio
+        if not getattr(attention, "_spinquant_qk_patched", False):
+            attention.forward = types.MethodType(
+                _spinquant_attention_forward, attention
+            )
+            attention._spinquant_qk_patched = True
+
     return bank
 
 
@@ -355,7 +392,9 @@ def train_spinquant_cross_entropy(
         raise ValueError("input_ids must be non-empty")
     if config.batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    if config.r1_steps <= 0:
+    actual_r2_steps = config.r2_steps if config.r2_steps is not None else config.r1_steps
+    total_steps = max(config.r1_steps, actual_r2_steps)
+    if total_steps <= 0:
         return rotations, []
 
     device = torch.device(device)
@@ -368,15 +407,18 @@ def train_spinquant_cross_entropy(
     }
     history: list[float] = []
     sample_count = len(input_ids)
-    total_steps = config.r1_steps
     for step in range(total_steps):
         generator = torch.Generator().manual_seed(step)
         count = min(config.batch_size, sample_count)
         indices = torch.randperm(sample_count, generator=generator)[:count].tolist()
         batch = torch.cat([input_ids[idx].to(device) for idx in indices], dim=0)
-        r1_var = r1_work.detach().requires_grad_(True)
+
+        train_r1 = step < config.r1_steps
+        train_r2 = step < actual_r2_steps
+
+        r1_var = r1_work.detach().requires_grad_(train_r1)
         r2_vars = {
-            idx: value.detach().requires_grad_(True)
+            idx: value.detach().requires_grad_(train_r2)
             for idx, value in r2_work.items()
         }
         bank.r1 = r1_var
@@ -389,18 +431,20 @@ def train_spinquant_cross_entropy(
         )
         loss.backward()
         with torch.no_grad():
-            r1_work = cayley_update(
-                r1_var.detach(),
-                r1_var.grad.detach(),
-                step_size=config.learning_rate,
-            )
-            for idx, r2_var in r2_vars.items():
-                if r2_var.grad is not None:
-                    r2_work[idx] = cayley_update(
-                        r2_var.detach(),
-                        r2_var.grad.detach(),
-                        step_size=config.learning_rate,
-                    )
+            if train_r1 and r1_var.grad is not None:
+                r1_work = cayley_update(
+                    r1_var.detach(),
+                    r1_var.grad.detach(),
+                    step_size=config.learning_rate,
+                )
+            if train_r2:
+                for idx, r2_var in r2_vars.items():
+                    if r2_var.grad is not None:
+                        r2_work[idx] = cayley_update(
+                            r2_var.detach(),
+                            r2_var.grad.detach(),
+                            step_size=config.learning_rate,
+                        )
         history.append(float(loss.detach().cpu()))
 
     return (

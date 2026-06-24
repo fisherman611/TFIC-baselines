@@ -239,6 +239,102 @@ def _group_key(name: str) -> str:
     return name
 
 
+class TrainableHeadTransform(nn.Module):
+    def __init__(self, head_dim: int):
+        super().__init__()
+        self.skew = nn.Parameter(torch.zeros(head_dim, head_dim))
+
+    @property
+    def matrix(self) -> torch.Tensor:
+        S = self.skew - self.skew.t()
+        I = torch.eye(S.shape[0], device=S.device, dtype=S.dtype)
+        return torch.linalg.solve(I + S, I - S)
+
+
+class _FlatQuantTrainableAttention(nn.Module):
+    def __init__(self, source: nn.Module, config: FlatQuantTrainingConfig):
+        super().__init__()
+        self.source = source
+        self.config = config
+        head_dim = getattr(source, "head_dim", None)
+        if head_dim is None:
+            head_dim = getattr(source, "k_proj").source.out_features // getattr(source, "num_key_value_heads", getattr(source, "num_heads", 1))
+        self.head_dim = head_dim
+        self.p_h = TrainableHeadTransform(self.head_dim)
+
+    def forward(self, hidden_states, position_embeddings=None, attention_mask=None, past_key_values=None, **kwargs):
+        from grid_baselines.flatquant_model import resolve_attention_runtime
+        runtime = resolve_attention_runtime(self.source)
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        query_states = self.source.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_states = self.source.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = self.source.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+        cos, sin = position_embeddings
+        query_states, key_states = runtime.apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        matrix = self.p_h.matrix.to(query_states)
+        inverse_transpose = torch.linalg.inv(matrix.float()).t().to(query_states)
+        query_states = query_states.matmul(inverse_transpose)
+        key_states = key_states.matmul(matrix)
+
+        query_states = _fake_quantize(
+            query_states,
+            bits=self.config.activation_bits,
+            symmetric=self.config.activation_symmetric,
+            group_size=-1,
+            clip_max=self.source.q_proj.activation_clip_max_logit.sigmoid(),
+            clip_min=self.source.q_proj.activation_clip_min_logit.sigmoid(),
+        )
+        key_states = _fake_quantize(
+            key_states,
+            bits=self.config.activation_bits,
+            symmetric=self.config.activation_symmetric,
+            group_size=-1,
+            clip_max=self.source.k_proj.activation_clip_max_logit.sigmoid(),
+            clip_min=self.source.k_proj.activation_clip_min_logit.sigmoid(),
+        )
+        value_states = _fake_quantize(
+            value_states,
+            bits=self.config.activation_bits,
+            symmetric=self.config.activation_symmetric,
+            group_size=-1,
+            clip_max=self.source.v_proj.activation_clip_max_logit.sigmoid(),
+            clip_min=self.source.v_proj.activation_clip_min_logit.sigmoid(),
+        )
+
+        attention_interface = runtime.attention_interfaces.get_interface(
+            self.source.config._attn_implementation, runtime.eager_attention_forward
+        )
+        attention_kwargs = runtime.extra_attention_kwargs(self.source)
+        attention_kwargs.update(kwargs)
+        attn_output, attn_weights = attention_interface(
+            self.source,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.source.attention_dropout,
+            scaling=self.source.scaling,
+            **attention_kwargs,
+        )
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        return self.source.o_proj(attn_output), attn_weights
+
+    def export(self) -> dict[str, torch.Tensor]:
+        return {
+            "matrix_h": self.p_h.matrix.detach().cpu(),
+            "q_clip_max": self.source.q_proj.activation_clip_max_logit.sigmoid().detach().cpu(),
+            "q_clip_min": self.source.q_proj.activation_clip_min_logit.sigmoid().detach().cpu(),
+            "k_clip_max": self.source.k_proj.activation_clip_max_logit.sigmoid().detach().cpu(),
+            "k_clip_min": self.source.k_proj.activation_clip_min_logit.sigmoid().detach().cpu(),
+            "v_clip_max": self.source.v_proj.activation_clip_max_logit.sigmoid().detach().cpu(),
+            "v_clip_min": self.source.v_proj.activation_clip_min_logit.sigmoid().detach().cpu(),
+        }
+
+
 def prepare_trainable_block(
     block: nn.Module,
     config: FlatQuantTrainingConfig,
@@ -283,6 +379,13 @@ def prepare_trainable_block(
         wrappers[name] = wrapper
     if len(wrappers) != 7:
         raise ValueError(f"expected seven FlatQuant linears in block, found {len(wrappers)}")
+    if hasattr(trainable, "self_attn"):
+        try:
+            from grid_baselines.flatquant_model import resolve_attention_runtime
+            resolve_attention_runtime(trainable.self_attn)
+            trainable.self_attn = _FlatQuantTrainableAttention(trainable.self_attn, config)
+        except TypeError:
+            pass
     return trainable, wrappers
 
 
@@ -381,4 +484,21 @@ def train_flatquant_block(
             **wrapper.transform.export(),
             **wrapper.export_clips(),
         }
+    if hasattr(quantized, "self_attn") and isinstance(quantized.self_attn, _FlatQuantTrainableAttention):
+        attn_export = quantized.self_attn.export()
+        artifacts["self_attn.kcache_trans"] = {"matrix": attn_export.pop("matrix_h")}
+        # the clips should be recorded inside q_proj, k_proj, v_proj
+        artifacts["self_attn.q_proj"].update({
+            "act_quantizer.clip_factor_a_max": attn_export.pop("q_clip_max"),
+            "act_quantizer.clip_factor_a_min": attn_export.pop("q_clip_min"),
+        })
+        artifacts["self_attn.k_proj"].update({
+            "act_quantizer.clip_factor_a_max": attn_export.pop("k_clip_max"),
+            "act_quantizer.clip_factor_a_min": attn_export.pop("k_clip_min"),
+        })
+        artifacts["self_attn.v_proj"].update({
+            "act_quantizer.clip_factor_a_max": attn_export.pop("v_clip_max"),
+            "act_quantizer.clip_factor_a_min": attn_export.pop("v_clip_min"),
+        })
+
     return artifacts, targets, history

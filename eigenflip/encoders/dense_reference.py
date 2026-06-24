@@ -153,7 +153,8 @@ class DenseGPTQ:
         d = stats.d
         pin = state.padded_in_features
 
-        mu = stats.mu_hat.to(device=dev, dtype=wdt)
+        mu = stats.mu_empirical if stats.mu_empirical is not None else stats.mu_hat
+        mu = mu.to(device=dev, dtype=wdt)
         H = stats.Sigma.to(device=dev, dtype=wdt) + torch.outer(mu, mu)  # [d, d]
         if pin > d:
             Hp = torch.zeros(pin, pin, device=dev, dtype=wdt)

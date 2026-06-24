@@ -31,7 +31,7 @@ Grid baselines:
 vanilla: symmetric and asymmetric
 awq:     symmetric and asymmetric
 flatquant:      online Kronecker activation transforms with transformed weights
-flatquant_diag: symmetric and asymmetric per-channel scale/clipping ablation
+flatquant_diag: (fixed-grid ablation) symmetric and asymmetric per-channel scale/clipping ablation
 spinquant: learned or random no-had R1/R2, then symmetric/asymmetric grid
 spinquant_had: R1/R2 plus online R3/R4 for low-bit activation/K-cache
 neuqi: Hessian-diagonal weighted grid initialization, asymmetric plus symmetric extension
@@ -44,7 +44,7 @@ rtn
 gptq
 gptaq
 gptaq_rescomp
-flexround
+flexround (fixed-grid surrogate)
 tfic
 ```
 

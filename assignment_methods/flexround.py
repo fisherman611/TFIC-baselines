@@ -5,6 +5,9 @@ This module adapts FlexRound's element-wise division rule to this repository's
 fixed so Vanilla, AWQ, and future grid baselines remain directly comparable.
 Only the integer-code assignment is learned.
 
+NOTE: This is a fixed-grid surrogate assignment method, NOT the full official 
+FlexRound paper implementation.
+
 For a fixed base grid scale ``delta1 = log(scale)`` and a positive learned
 FlexRound divisor ``S`` the fake-quantized weight follows the official
 ``delta1 + delta2 + delta3`` parameterization:
@@ -84,12 +87,15 @@ class FlexRoundAssignment:
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        log_divisor = log_element_divisor
+        dequant_scale = log_base_scale
         if log_layer_scale is not None:
-            log_divisor = log_divisor + log_layer_scale
+            dequant_scale = dequant_scale + log_layer_scale
+
+        log_divisor = log_element_divisor
         if log_row_scale is not None:
             log_divisor = log_divisor + log_row_scale
-        log_quant_scale = log_base_scale + log_divisor.clamp(
+
+        log_quant_scale = dequant_scale + log_divisor.clamp(
             min=-self.log_divisor_bound,
             max=self.log_divisor_bound,
         )
@@ -97,9 +103,7 @@ class FlexRoundAssignment:
             qmin - zero_point,
             qmax - zero_point,
         )
-        return signed_codes + zero_point, signed_codes * torch.exp(
-            log_base_scale
-        )
+        return signed_codes + zero_point, signed_codes * torch.exp(dequant_scale)
 
     @staticmethod
     def _reconstruction_loss(
@@ -235,6 +239,9 @@ class FlexRoundAssignment:
                     raise RuntimeError("FlexRound produced non-finite final weights")
 
         final_codes = final_codes.detach()
+        if self.learn_layer_scale and log_layer_scale is not None:
+            grid.scale.data = grid.scale.data * torch.exp(log_layer_scale.detach()).to(grid.scale.dtype)
+
         output = grid.dequantize(final_codes).to(grid.original_dtype)
         info = self._info(
             grid,

@@ -43,6 +43,7 @@ class LayerStats:
     # GPTAQ asymmetric-calibration statistic:
     # E[(X_full_precision - X_quantized)^T X_quantized].
     delta_cross: Optional[torch.Tensor] = field(default=None, repr=False)
+    mu_empirical: Optional[torch.Tensor] = field(default=None, repr=False)
     backend: str = "unknown"
 
     @property
@@ -122,7 +123,8 @@ def stats_from_gram(gram, k: int, eps: float = 1e-6,
     st = LayerStats(
         d=gram.d, mu_hat=mu_js, diag_H=diag_H, diag_Sigma=diag_Sigma,
         U_k=U_k, Lam_k=Lam_k, eps=eps,
-        Sigma=Sigma if keep_sigma else None, backend="gram",
+        Sigma=Sigma if keep_sigma else None,
+        mu_empirical=mu, backend="gram",
     ).build()
     if not keep_sigma:
         del Sigma
@@ -139,7 +141,7 @@ def stats_from_sketch(sketch, eps: float = 1e-6) -> LayerStats:
     mu_js = james_stein_mean(mu)
     return LayerStats(
         d=sketch.d, mu_hat=mu_js, diag_H=diag_H, diag_Sigma=diag_Sigma,
-        U_k=U_k, Lam_k=Lam_k, eps=eps, Sigma=None, backend="sketch",
+        U_k=U_k, Lam_k=Lam_k, eps=eps, Sigma=None, mu_empirical=mu, backend="sketch",
     ).build()
 
 

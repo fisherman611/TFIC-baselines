@@ -227,6 +227,8 @@ def main():
         },
         "training": vars(config),
         "layers": {},
+        "attention": {},
+        "attention_clips": {},
         "history": {},
     }
     slug = build_model_slug(args.model_path)
@@ -248,6 +250,23 @@ def main():
             device=train_device,
         )
         prefix = f"model.layers.{index}."
+        if "self_attn.kcache_trans" in local_artifact:
+            artifact["attention"][prefix + "self_attn"] = local_artifact.pop("self_attn.kcache_trans")["matrix"]
+
+        layer_clips = {}
+        for proj in ["q_proj", "k_proj", "v_proj"]:
+            name = f"self_attn.{proj}"
+            if name in local_artifact:
+                clips = {}
+                if "act_quantizer.clip_factor_a_max" in local_artifact[name]:
+                    clips["clip_factor_a_max"] = local_artifact[name].pop("act_quantizer.clip_factor_a_max")
+                if "act_quantizer.clip_factor_a_min" in local_artifact[name]:
+                    clips["clip_factor_a_min"] = local_artifact[name].pop("act_quantizer.clip_factor_a_min")
+                if clips:
+                    layer_clips[proj] = clips
+        if layer_clips:
+            artifact["attention_clips"][prefix + "self_attn"] = layer_clips
+
         artifact["layers"].update(
             {prefix + name: values for name, values in local_artifact.items()}
         )
