@@ -17,13 +17,13 @@ from grid_baselines.flatquant_model import (  # noqa: E402
     load_flatquant_transforms,
     validate_flatquant_artifact_identity,
 )
-from grid_baselines.flatquant_training import (  # noqa: E402
-    FlatQuantTrainingConfig,
+from grid_baselines.flatquant_calibration import (  # noqa: E402
+    FlatQuantCalibrationConfig,
     factor_dimensions,
-    train_flatquant_block,
+    calibrate_flatquant_block,
 )
 from scripts.check_flatquant_parity import parity_metrics  # noqa: E402
-from scripts.train_flatquant import capture_first_layer_inputs  # noqa: E402
+from scripts.calibrate_flatquant import capture_first_layer_inputs  # noqa: E402
 from tests.test_flatquant_model_integration import (  # noqa: E402
     MODEL_FACTORIES,
     _tiny_llama,
@@ -75,7 +75,7 @@ def test_factor_dimensions_choose_exact_near_square_factors():
 def test_flatquant_block_calibration_exports_seven_linears():
     torch.manual_seed(0)
     inputs = [torch.randn(1, 3, 4) for _ in range(3)]
-    config = FlatQuantTrainingConfig(
+    config = FlatQuantCalibrationConfig(
         weight_bits=4,
         activation_bits=4,
         weight_group_size=4,
@@ -84,7 +84,7 @@ def test_flatquant_block_calibration_exports_seven_linears():
         batch_size=2,
         learning_rate=1e-3,
     )
-    artifact, outputs, history = train_flatquant_block(
+    artifact, outputs, history = calibrate_flatquant_block(
         _ToyBlock(),
         inputs,
         [{}, {}, {}],
@@ -139,15 +139,15 @@ def test_flatquant_artifact_identity_validation(tmp_path):
         )
 
 
-def test_trained_artifact_is_loadable_by_runtime(tmp_path):
+def test_calibrated_artifact_is_loadable_by_runtime(tmp_path):
     torch.manual_seed(1)
-    config = FlatQuantTrainingConfig(
+    config = FlatQuantCalibrationConfig(
         weight_group_size=4,
         epochs=1,
         batch_size=1,
         learning_rate=1e-3,
     )
-    artifact, _outputs, _history = train_flatquant_block(
+    artifact, _outputs, _history = calibrate_flatquant_block(
         _ToyBlock(),
         [torch.randn(1, 2, 4)],
         [{}],
@@ -175,7 +175,7 @@ def test_parity_metrics_report_exact_match():
 
 
 @pytest.mark.parametrize("model_factory", MODEL_FACTORIES)
-def test_flatquant_training_runs_on_real_transformers_decoder_block(model_factory):
+def test_flatquant_calibration_runs_on_real_transformers_decoder_block(model_factory):
     torch.manual_seed(2)
     model = model_factory().float()
     inputs, kwargs = capture_first_layer_inputs(
@@ -184,13 +184,13 @@ def test_flatquant_training_runs_on_real_transformers_decoder_block(model_factor
         calibration=[torch.tensor([[1, 2, 3, 4]])],
         input_device=torch.device("cpu"),
     )
-    config = FlatQuantTrainingConfig(
+    config = FlatQuantCalibrationConfig(
         weight_group_size=4,
         epochs=1,
         batch_size=1,
         learning_rate=1e-4,
     )
-    artifact, outputs, history = train_flatquant_block(
+    artifact, outputs, history = calibrate_flatquant_block(
         model.model.layers[0],
         inputs,
         kwargs,

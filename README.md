@@ -4,7 +4,7 @@ This repository contains post-training quantization baselines for studying:
 
 - quantization grids / transforms: Vanilla, AWQ, NeUQI, FlatQuant affine
   transforms, the FlatQuant diagonal ablation, and SpinQuant are implemented
-- assignment methods: RTN, GPTQ, GPTAQ, GPTAQ+ResComp, fixed-grid FlexRound, and TFIC are implemented
+- assignment methods: RTN, GPTQ, GPTAQ, GPTAQ+ResComp, FlexRound, and TFIC are implemented
 - evaluation: perplexity on WikiText2 and C4, plus `lm-eval`
 
 Repository layout:
@@ -44,18 +44,17 @@ rtn
 gptq
 gptaq
 gptaq_rescomp
-flexround (fixed-grid surrogate)
+flexround
 tfic
 ```
 
-`flexround` is the assignment-only variant required by this repository's
-factorized benchmark. It keeps the selected grid's scale and zero-point fixed,
-learns FlexRound's positive element-wise divisor (plus its output-channel
-factor), and minimizes the calibration reconstruction surrogate
-`H_tilde = diag(D) + V V^T`. As in the paper, the integer codes produced after
-the final optimization step are returned directly. The learned divisors are
-not stored in the checkpoint; inference still uses ordinary integer codes and
-the original Vanilla/AWQ grid.
+`flexround` follows the official FlexRound quantizer parameterization from
+FlexRound_LRQ: `delta1` is initialized from the selected grid scale and learned
+by default, while `delta2` is element-wise and `delta3` is the output-channel
+factor. It still uses this repository's calibration reconstruction surrogate
+`H_tilde = diag(D) + V V^T` instead of FlexRound_LRQ's cached transformer-block
+input/output reconstruction loop. Set `--no-flexround-learn-layer-scale` to
+recover the older fixed-grid assignment-only ablation.
 
 `gptaq` is implemented in `assignment_methods/gptaq.py` as a fixed-grid port of
 the official GPTAQ lazy block update. The whole-model runner collects paired
@@ -82,13 +81,19 @@ online, and assignment statistics are collected after that transform. Official
 cache fake quantization. The saved manifest restores the online path in PPL
 and lm-eval.
 
-`python -m scripts.train_flatquant` performs repository-native block-wise
+`python -m scripts.calibrate_flatquant` performs repository-native block-wise
 calibration optimization. Base-model weights remain frozen; only Kronecker
 factors, diagonal scales, and weight/activation clipping parameters are
 optimized against the floating-point block output. Generated artifacts contain
 structural model identity and quantization settings, which the runner validates
 before use. Official `flat_matrices.pth` files remain supported for experiments
 that need learned `kcache_trans`/`vcache_trans` in addition to W/A transforms.
+
+`python -m scripts.calibrate_flexround` performs the official-style FlexRound
+block calibration loop. It captures floating-point block outputs, replaces the
+seven LLaMA-family linear projections with trainable FlexRound quantizers, and
+optimizes `delta1`, `delta2`, and `delta3` with block-output MSE before saving
+a model-bound artifact.
 
 `flatquant_diag` remains a fixed-grid-compatible ablation of FlatQuant: the
 learned pair-wise per-channel scale `c` and optional learned weight clipping
@@ -104,7 +109,7 @@ methods operate on the exact coordinates consumed by each path. Use
 `--spinquant-rotations-pt` for a learned checkpoint containing `R1` and
 `model.layers.{i}.self_attn.R2`. `--spinquant-random-rotations` exists only for
 pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
-`python -m scripts.train_spinquant` trains repository-native R1/R2 rotation
+`python -m scripts.calibrate_spinquant` calibrates repository-native R1/R2 rotation
 artifacts on calibration data with a full fake-quantized model cross-entropy
 objective by default; its defaults match this project's C4/128/2048 setting
 and save a loader-compatible `--spinquant-rotations-pt` file. Use
@@ -354,10 +359,10 @@ DELETE_CHECKPOINT=1 GRIDS="vanilla" SCHEMES="asymmetric symmetric" ASSIGNMENTS="
 
 ## Single-Cell Commands
 
-Train FlatQuant transforms on calibration data:
+Calibrate FlatQuant transforms:
 
 ```bash
-uv run python -m scripts.train_flatquant \
+uv run python -m scripts.calibrate_flatquant \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --weight-bits 4 \
   --activation-bits 4 \
@@ -378,6 +383,20 @@ the project's common group-size-128 weight grid. The official FlatQuant
 W4A4KV4 preset instead uses per-output-channel weight quantization and
 separately learned K/V-cache transforms. Use an official `flat_matrices.pth`
 artifact when reproducing that exact deployment setting.
+
+Calibrate FlexRound quantizers with cached block reconstruction:
+
+```bash
+uv run python -m scripts.calibrate_flexround \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --output-dir ./outputs/flexround \
+  --weight-bits 4 \
+  --calib-dataset c4 \
+  --n-calib 128 \
+  --seqlen 2048 \
+  --iters 5000 \
+  --learning-rate 3e-3
+```
 
 Full affine FlatQuant + GPTQ on the project grid:
 
@@ -410,7 +429,7 @@ The normalized transform artifact maps each linear module to
 `matrix_left`, `matrix_right`, and optionally `diagonal`,
 or `weight_clip`.
 
-AWQ + fixed-grid FlexRound:
+AWQ + FlexRound:
 
 ```bash
 uv run python -m scripts.run_quantization_baseline \
@@ -429,12 +448,13 @@ uv run python -m scripts.run_quantization_baseline \
   --k 16 \
   --layer-batch-size 4 \
   --flexround-steps 5000 \
-  --flexround-lr 2e-4
+  --flexround-lr 3e-3
 ```
 
 For a quick pipeline check, lower `--flexround-steps`; use 5000 for the paper's
 reconstruction-step budget. `--no-flexround-row-scale` disables the additional
-output-channel factor. The full runner exposes the same settings through
+output-channel factor, and `--no-flexround-learn-layer-scale` disables learned
+`delta1`. The full runner exposes the same settings through
 `FLEXROUND_STEPS`, `FLEXROUND_LR`, and `FLEXROUND_LOG_DIVISOR_BOUND`.
 
 FlatQuant diagonal-scale grid + RTN:
@@ -475,7 +495,7 @@ or to a dict with optional clipping:
 SpinQuant + RTN with learned rotations:
 
 ```bash
-uv run python -m scripts.train_spinquant \
+uv run python -m scripts.calibrate_spinquant \
   --model-path meta-llama/Meta-Llama-3.1-8B \
   --out ./outputs/spinquant/llama31_8b_R.pt \
   --calib-dataset c4 \
@@ -545,7 +565,7 @@ python -m scripts.run_quantization_baseline \
   --seqlen 128 \
   --k 0 \
   --flexround-steps 1 \
-  --flexround-lr 2e-4 \
+  --flexround-lr 3e-3 \
   --device-map auto \
   --input-device auto \
   --stats-device layer

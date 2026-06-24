@@ -215,7 +215,7 @@ class CalibrationFlatQuantLinear(nn.Module):
 
 
 @dataclass
-class FlatQuantTrainingConfig:
+class FlatQuantCalibrationConfig:
     weight_bits: int = 4
     activation_bits: int = 4
     weight_symmetric: bool = True
@@ -252,7 +252,7 @@ class TrainableHeadTransform(nn.Module):
 
 
 class _FlatQuantTrainableAttention(nn.Module):
-    def __init__(self, source: nn.Module, config: FlatQuantTrainingConfig):
+    def __init__(self, source: nn.Module, config: FlatQuantCalibrationConfig):
         super().__init__()
         self.source = source
         self.config = config
@@ -337,7 +337,7 @@ class _FlatQuantTrainableAttention(nn.Module):
 
 def prepare_trainable_block(
     block: nn.Module,
-    config: FlatQuantTrainingConfig,
+    config: FlatQuantCalibrationConfig,
 ) -> tuple[nn.Module, dict[str, CalibrationFlatQuantLinear]]:
     trainable = _remove_dispatch_hooks(copy.deepcopy(block))
     for parameter in trainable.parameters():
@@ -406,12 +406,12 @@ def _block_output(block: nn.Module, hidden: torch.Tensor, kwargs: dict) -> torch
     return output[0] if isinstance(output, tuple) else output
 
 
-def train_flatquant_block(
+def calibrate_flatquant_block(
     block: nn.Module,
     inputs: list[torch.Tensor],
     block_kwargs: list[dict],
     *,
-    config: FlatQuantTrainingConfig,
+    config: FlatQuantCalibrationConfig,
     device: torch.device | str,
 ) -> tuple[dict[str, dict[str, torch.Tensor]], list[torch.Tensor], list[float]]:
     """Optimize one decoder block and return normalized per-linear artifacts."""
@@ -502,3 +502,7 @@ def train_flatquant_block(
         })
 
     return artifacts, targets, history
+
+
+FlatQuantTrainingConfig = FlatQuantCalibrationConfig
+train_flatquant_block = calibrate_flatquant_block

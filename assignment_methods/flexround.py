@@ -1,32 +1,25 @@
-"""Fixed-grid FlexRound assignment baseline.
+"""FlexRound assignment baseline.
 
-This module adapts FlexRound's element-wise division rule to this repository's
-``grid x assignment`` experiments.  The grid scale and zero-point are kept
-fixed so Vanilla, AWQ, and future grid baselines remain directly comparable.
-Only the integer-code assignment is learned.
+This module adapts FlexRound's official weight quantizer to this repository's
+``grid x assignment`` runner.  It learns the same ``delta1 + delta2 + delta3``
+parameters as FlexRound_LRQ's ``UniformAffineQuantizer`` while optimizing the
+calibration reconstruction surrogate already carried by ``LayerStats``:
 
-NOTE: This is a fixed-grid surrogate assignment method, NOT the full official 
-FlexRound paper implementation.
+    H_tilde = diag(D) + V V^T
+    loss    = sum_rows (W_hat - W) H_tilde (W_hat - W)^T
 
-For a fixed base grid scale ``delta1 = log(scale)`` and a positive learned
-FlexRound divisor ``S`` the fake-quantized weight follows the official
-``delta1 + delta2 + delta3`` parameterization:
+It is still not the full FlexRound_LRQ block-reconstruction pipeline, because
+the local assignment API does not receive cached block input/output tensors.
+
+The fake-quantized weight follows the official parameterization:
 
     q_signed = clip(round(W / exp(delta1 + log(S))),
                     qmin - zero_point, qmax - zero_point)
     W_hat    = q_signed * exp(delta1)
 
-``S`` is factorized into an element-wise term and, optionally, a shared output
-channel term as in FlexRound's linear-layer formulation.  The parameters are
-optimized against the calibration reconstruction surrogate already carried by
-``LayerStats``:
-
-    H_tilde = diag(D) + V V^T
-    loss    = sum_rows (W_hat - W) H_tilde (W_hat - W)^T
-
-Rounding uses a straight-through estimator.  The learned divisors are only an
-optimization device; the returned checkpoint contains ordinary integer codes
-on the original fixed grid and has no per-weight inference overhead.
+``delta1`` is initialized from the selected grid scale and is learnable by
+default, matching the original code.  Set ``learn_layer_scale=False`` to recover
+the older fixed-grid assignment-only behavior.
 """
 
 from __future__ import annotations
@@ -42,18 +35,18 @@ def _ste_round(values: torch.Tensor) -> torch.Tensor:
 
 
 class FlexRoundAssignment:
-    """Learn FlexRound integer assignments on an existing fixed grid."""
+    """Learn FlexRound integer assignments on an existing grid."""
 
     name = "flexround"
-    variant = "fixed_grid_surrogate"
+    variant = "official_quantizer_surrogate"
 
     def __init__(
         self,
         *,
         steps: int = 5000,
-        lr: float = 2e-4,
-        log_divisor_bound: float = 6.0,
-        learn_layer_scale: bool = False,
+        lr: float = 3e-3,
+        log_divisor_bound: float = float("inf"),
+        learn_layer_scale: bool = True,
         learn_row_scale: bool = True,
         work_dtype: torch.dtype = torch.float32,
     ):
@@ -79,31 +72,28 @@ class FlexRoundAssignment:
     def _fake_quantize(
         self,
         weights: torch.Tensor,
-        log_base_scale: torch.Tensor,
+        log_delta1: torch.Tensor,
         zero_point: torch.Tensor,
         log_element_divisor: torch.Tensor,
-        log_layer_scale: torch.Tensor | None,
         log_row_scale: torch.Tensor | None,
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        dequant_scale = log_base_scale
-        if log_layer_scale is not None:
-            dequant_scale = dequant_scale + log_layer_scale
-
         log_divisor = log_element_divisor
         if log_row_scale is not None:
             log_divisor = log_divisor + log_row_scale
 
-        log_quant_scale = dequant_scale + log_divisor.clamp(
-            min=-self.log_divisor_bound,
-            max=self.log_divisor_bound,
-        )
+        if self.log_divisor_bound != float("inf"):
+            log_divisor = log_divisor.clamp(
+                min=-self.log_divisor_bound,
+                max=self.log_divisor_bound,
+            )
+        log_quant_scale = log_delta1 + log_divisor
         signed_codes = _ste_round(weights / torch.exp(log_quant_scale)).clamp(
             qmin - zero_point,
             qmax - zero_point,
         )
-        return signed_codes + zero_point, signed_codes * torch.exp(dequant_scale)
+        return signed_codes + zero_point, signed_codes * torch.exp(log_delta1)
 
     @staticmethod
     def _reconstruction_loss(
@@ -138,7 +128,6 @@ class FlexRoundAssignment:
         dtype = self.work_dtype
         padded_weights = grid.float_weights.detach().to(device=device, dtype=dtype)
         scale = grid.scale.detach().to(device=device, dtype=dtype)
-        log_base_scale = scale.log()
         zero_point = grid.zero_point.detach().to(device=device, dtype=dtype)
         diagonal = stats.D.detach().to(device=device, dtype=dtype)
         low_rank = stats.V.detach().to(device=device, dtype=dtype)
@@ -165,14 +154,11 @@ class FlexRoundAssignment:
                 initial_loss,
             )
 
-        log_element_scale = torch.nn.Parameter(torch.zeros_like(padded_weights))
-        parameters: list[torch.nn.Parameter] = [log_element_scale]
-        log_layer_scale = None
+        log_delta1 = scale.log().clone()
+        parameters: list[torch.nn.Parameter] = []
         if self.learn_layer_scale:
-            log_layer_scale = torch.nn.Parameter(
-                torch.zeros(1, 1, device=device, dtype=dtype)
-            )
-            parameters.append(log_layer_scale)
+            log_delta1 = torch.nn.Parameter(log_delta1)
+            parameters.append(log_delta1)
         log_row_scale = None
         if self.learn_row_scale:
             log_row_scale = torch.nn.Parameter(
@@ -184,8 +170,15 @@ class FlexRoundAssignment:
                 )
             )
             parameters.append(log_row_scale)
+        log_element_scale = torch.nn.Parameter(torch.zeros_like(padded_weights))
+        parameters.append(log_element_scale)
 
         optimizer = torch.optim.Adam(parameters, lr=self.lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, self.steps),
+            eta_min=0.0,
+        )
 
         # The outer collector runs under no_grad; explicitly re-enable
         # autograd only for the local FlexRound optimization.
@@ -194,10 +187,9 @@ class FlexRoundAssignment:
                 optimizer.zero_grad(set_to_none=True)
                 codes, dequantized = self._fake_quantize(
                     padded_weights,
-                    log_base_scale,
+                    log_delta1,
                     zero_point,
                     log_element_scale,
-                    log_layer_scale,
                     log_row_scale,
                     grid.qmin,
                     grid.qmax,
@@ -212,17 +204,17 @@ class FlexRoundAssignment:
                 if not torch.isfinite(loss):
                     raise RuntimeError(
                         f"FlexRound loss became non-finite at step {step}"
-                    )
+                )
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
 
             with torch.no_grad():
                 final_codes, final_dequantized = self._fake_quantize(
                     padded_weights,
-                    log_base_scale,
+                    log_delta1,
                     zero_point,
                     log_element_scale,
-                    log_layer_scale,
                     log_row_scale,
                     grid.qmin,
                     grid.qmax,
@@ -239,8 +231,8 @@ class FlexRoundAssignment:
                     raise RuntimeError("FlexRound produced non-finite final weights")
 
         final_codes = final_codes.detach()
-        if self.learn_layer_scale and log_layer_scale is not None:
-            grid.scale.data = grid.scale.data * torch.exp(log_layer_scale.detach()).to(grid.scale.dtype)
+        if self.learn_layer_scale:
+            grid.scale.data = torch.exp(log_delta1.detach()).to(grid.scale.dtype)
 
         output = grid.dequantize(final_codes).to(grid.original_dtype)
         info = self._info(
@@ -251,7 +243,7 @@ class FlexRoundAssignment:
             final_loss,
         )
 
-        del optimizer, parameters, log_element_scale, log_layer_scale, log_row_scale
+        del optimizer, scheduler, parameters, log_delta1, log_element_scale, log_row_scale
         return output, info
 
     def _info(

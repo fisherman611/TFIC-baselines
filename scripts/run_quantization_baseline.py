@@ -532,13 +532,17 @@ def parse_args():
     )
 
     parser.add_argument("--flexround-steps", type=int, default=5000)
-    parser.add_argument("--flexround-lr", type=float, default=2e-4)
-    parser.add_argument("--flexround-log-divisor-bound", type=float, default=6.0)
+    parser.add_argument("--flexround-lr", type=float, default=3e-3)
+    parser.add_argument(
+        "--flexround-log-divisor-bound",
+        type=float,
+        default=float("inf"),
+    )
     parser.add_argument(
         "--flexround-learn-layer-scale",
-        action="store_true",
-        default=False,
-        help="Learn the layer_scale in FlexRound (updates dequantization scale).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn delta1 in FlexRound (updates dequantization scale).",
     )
     parser.add_argument(
         "--flexround-row-scale",

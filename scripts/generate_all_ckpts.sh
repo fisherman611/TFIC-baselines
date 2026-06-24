@@ -54,7 +54,7 @@ for METHOD in $METHODS; do
       else
         FQ_ARGS="--no-weight-symmetric --no-activation-symmetric"
       fi
-      python -m scripts.train_flatquant \
+      python -m scripts.calibrate_flatquant \
         --model-path "$MODEL_PATH" \
         --output-dir "$OUTPUT_DIR/flatquant_$SCHEME" \
         --weight-bits "$BITS" \
@@ -64,7 +64,7 @@ for METHOD in $METHODS; do
     elif [[ "$METHOD" == "spinquant" ]]; then
       # SpinQuant rotations are scheme-agnostic, only run once
       if [[ "$SCHEME" == "asymmetric" ]]; then
-        python -m scripts.train_spinquant \
+        python -m scripts.calibrate_spinquant \
           --model-path "$MODEL_PATH" \
           --output-dir "$OUTPUT_DIR/spinquant" \
           --seqlen "$SEQLEN"

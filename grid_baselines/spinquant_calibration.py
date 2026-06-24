@@ -1,4 +1,4 @@
-"""Calibration training for SpinQuant R1/R2 rotation artifacts."""
+"""Calibration optimization for SpinQuant R1/R2 rotation artifacts."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .transformed_linear import fake_quantize_activation
 
 
 @dataclass
-class SpinQuantTrainingConfig:
+class SpinQuantCalibrationConfig:
     weight_bits: int = 4
     weight_group_size: int = 128
     weight_scheme: str = "asymmetric"
@@ -98,7 +98,7 @@ def _fake_quantize_weight(
     return quantized.reshape_as(values)
 
 
-def _quantize_activation(values: torch.Tensor, config: SpinQuantTrainingConfig):
+def _quantize_activation(values: torch.Tensor, config: SpinQuantCalibrationConfig):
     return fake_quantize_activation(
         values,
         bits=config.activation_bits,
@@ -164,7 +164,7 @@ def _linear_weight_loss(
     target: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor | None,
-    config: SpinQuantTrainingConfig,
+    config: SpinQuantCalibrationConfig,
 ) -> torch.Tensor:
     quantized_weight = _fake_quantize_weight(
         weight,
@@ -230,7 +230,7 @@ class _SpinQuantTrainableLinear(nn.Module):
         bank: _RotationBank,
         layer_idx: int,
         role: str,
-        config: SpinQuantTrainingConfig,
+        config: SpinQuantCalibrationConfig,
         head_dim: int,
     ):
         super().__init__()
@@ -271,7 +271,7 @@ class _SpinQuantTrainableLinear(nn.Module):
             weight = r1.t().matmul(weight)
             bias = _rotate_bias_left(bias, r1)
         else:
-            raise ValueError(f"unknown SpinQuant training role: {self.role}")
+            raise ValueError(f"unknown SpinQuant calibration role: {self.role}")
         return (
             _fake_quantize_weight(
                 weight,
@@ -312,10 +312,10 @@ class _SpinQuantTrainableLinear(nn.Module):
         return output
 
 
-def install_spinquant_training_wrappers(
+def install_spinquant_calibration_wrappers(
     model,
     rotations: SpinQuantRotations,
-    config: SpinQuantTrainingConfig,
+    config: SpinQuantCalibrationConfig,
 ) -> _RotationBank:
     """Install differentiable no-had SpinQuant fake-quant wrappers in place."""
 
@@ -378,12 +378,12 @@ def install_spinquant_training_wrappers(
     return bank
 
 
-def train_spinquant_cross_entropy(
+def calibrate_spinquant_cross_entropy(
     model,
     input_ids: list[torch.Tensor],
     rotations: SpinQuantRotations,
     *,
-    config: SpinQuantTrainingConfig,
+    config: SpinQuantCalibrationConfig,
     device: torch.device | str,
 ) -> tuple[SpinQuantRotations, list[float]]:
     """Optimize R1/R2 with the paper-style quantized-network CE objective."""
@@ -399,7 +399,7 @@ def train_spinquant_cross_entropy(
 
     device = torch.device(device)
     model = model.to(device).eval()
-    bank = install_spinquant_training_wrappers(model, rotations, config)
+    bank = install_spinquant_calibration_wrappers(model, rotations, config)
     r1_work = rotations.R1.to(device=device, dtype=torch.float32)
     r2_work = {
         idx: value.to(device=device, dtype=torch.float32)
@@ -515,13 +515,13 @@ def _move_tree(value, device):
     return value
 
 
-def train_spinquant_layer_rotations(
+def calibrate_spinquant_layer_rotations(
     layer: torch.nn.Module,
     captured: dict[str, list[torch.Tensor]],
     *,
     r1: torch.Tensor,
     r2: torch.Tensor,
-    config: SpinQuantTrainingConfig,
+    config: SpinQuantCalibrationConfig,
     device: torch.device | str,
     train_r1: bool,
     train_r2: bool,
@@ -577,7 +577,7 @@ def _spinquant_layer_loss(
     indices: list[int],
     r1: torch.Tensor,
     r2: torch.Tensor,
-    config: SpinQuantTrainingConfig,
+    config: SpinQuantCalibrationConfig,
     device: torch.device,
 ) -> torch.Tensor:
     losses = []
@@ -669,3 +669,9 @@ def summarize_history(history: list[float]) -> dict[str, float | int | None]:
         "min_loss": min(history),
         "mean_loss": math.fsum(history) / len(history),
     }
+
+
+SpinQuantTrainingConfig = SpinQuantCalibrationConfig
+install_spinquant_training_wrappers = install_spinquant_calibration_wrappers
+train_spinquant_cross_entropy = calibrate_spinquant_cross_entropy
+train_spinquant_layer_rotations = calibrate_spinquant_layer_rotations

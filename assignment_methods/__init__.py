@@ -1,6 +1,10 @@
 """Assignment-method baseline wrappers."""
 
 from .flexround import FlexRoundAssignment
+from .flexround_calibration import (
+    FlexRoundCalibrationConfig,
+    calibrate_flexround_block,
+)
 from .gptaq import GPTAQAssignment, stats_from_paired_inputs
 from .gptaq_rescomp import GPTAQResCompAssignment
 from .gptq import GPTQAssignment
@@ -11,6 +15,8 @@ from .tfic import TFICAssignment
 
 __all__ = [
     "FlexRoundAssignment",
+    "FlexRoundCalibrationConfig",
+    "calibrate_flexround_block",
     "GPTAQAssignment",
     "GPTAQResCompAssignment",
     "GPTQAssignment",

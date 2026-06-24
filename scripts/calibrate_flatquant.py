@@ -18,9 +18,9 @@ from baseline_utils.calibration import (
 from baseline_utils.runtime import build_model_slug, load_runtime_env
 from baseline_utils.wandb import log_to_wandb, wandb_enabled_from_env
 from eigenflip.statistics.collect_fast import _resolve_input_device
-from grid_baselines.flatquant_training import (
-    FlatQuantTrainingConfig,
-    train_flatquant_block,
+from grid_baselines.flatquant_calibration import (
+    FlatQuantCalibrationConfig,
+    calibrate_flatquant_block,
 )
 
 
@@ -198,7 +198,7 @@ def main():
         model, tokenizer, calibration, input_device
     )
 
-    config = FlatQuantTrainingConfig(
+    config = FlatQuantCalibrationConfig(
         weight_bits=args.weight_bits,
         activation_bits=args.activation_bits,
         weight_symmetric=args.weight_symmetric,
@@ -242,7 +242,7 @@ def main():
     for index in range(layer_count):
         print(f"FlatQuant calibration block {index + 1}/{layer_count}")
         block = model.model.layers[index].cpu()
-        local_artifact, inputs, history = train_flatquant_block(
+        local_artifact, inputs, history = calibrate_flatquant_block(
             block,
             inputs,
             block_kwargs,

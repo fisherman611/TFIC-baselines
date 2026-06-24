@@ -1,4 +1,4 @@
-"""Train SpinQuant R1/R2 rotations on calibration data and save an artifact."""
+"""Calibrate SpinQuant R1/R2 rotations and save an artifact."""
 
 from __future__ import annotations
 
@@ -16,15 +16,15 @@ from baseline_utils.calibration import (
 )
 from baseline_utils.runtime import build_model_slug, load_runtime_env
 from eigenflip.statistics.collect_fast import _resolve_input_device
-from grid_baselines.spinquant_training import (
-    SpinQuantTrainingConfig,
+from grid_baselines.spinquant_calibration import (
+    SpinQuantCalibrationConfig,
     capture_spinquant_layer_inputs,
     identity_spinquant_rotations,
     summarize_history,
-    train_spinquant_cross_entropy,
-    train_spinquant_layer_rotations,
+    calibrate_spinquant_cross_entropy,
+    calibrate_spinquant_layer_rotations,
 )
-from scripts.train_flatquant import capture_first_layer_inputs, model_identity
+from scripts.calibrate_flatquant import capture_first_layer_inputs, model_identity
 
 
 def load_calibration(tokenizer, args):
@@ -150,7 +150,7 @@ def main():
         hidden_size=int(model.config.hidden_size),
         head_dim=head_dim,
     )
-    config = SpinQuantTrainingConfig(
+    config = SpinQuantCalibrationConfig(
         weight_bits=args.weight_bits,
         weight_group_size=args.weight_group_size,
         weight_scheme=args.weight_scheme,
@@ -191,7 +191,7 @@ def main():
 
     if args.objective == "cross_entropy":
         ce_inputs = calibration_input_ids(tokenizer, calibration, args)
-        rotations, history = train_spinquant_cross_entropy(
+        rotations, history = calibrate_spinquant_cross_entropy(
             model,
             ce_inputs,
             rotations,
@@ -218,7 +218,7 @@ def main():
                 block_kwargs,
                 device=train_device,
             )
-            r1, r2, r1_history = train_spinquant_layer_rotations(
+            r1, r2, r1_history = calibrate_spinquant_layer_rotations(
                 layer,
                 captured,
                 r1=rotations.R1,
@@ -229,7 +229,7 @@ def main():
                 train_r2=False,
             )
             rotations.R1 = r1
-            r1, r2, r2_history = train_spinquant_layer_rotations(
+            r1, r2, r2_history = calibrate_spinquant_layer_rotations(
                 layer,
                 captured,
                 r1=rotations.R1,

@@ -35,6 +35,7 @@ def flexround_correlated_stats() -> LayerStats:
 @pytest.mark.parametrize("grid", toy_vanilla_grids() + toy_awq_grids())
 def test_flexround_runs_on_fixed_grids_and_returns_valid_final_codes(grid):
     stats = flexround_correlated_stats()
+    initial_scale = grid.scale.clone()
     output, info = FlexRoundAssignment(steps=300, lr=3e-2).apply_to_grid(
         grid,
         stats,
@@ -44,8 +45,9 @@ def test_flexround_runs_on_fixed_grids_and_returns_valid_final_codes(grid):
     assert output.shape == weights.shape
     assert output.dtype == grid.original_dtype
     assert info["assignment"] == "flexround"
-    assert info["variant"] == "fixed_grid_surrogate"
+    assert info["variant"] == "official_quantizer_surrogate"
     assert info["grid_scheme"] == grid.scheme
+    assert not torch.allclose(grid.scale, initial_scale)
     assert torch.isfinite(torch.tensor(info["initial_loss"]))
     assert torch.isfinite(torch.tensor(info["final_loss"]))
     assert info["final_loss"] * weights.shape[0] == pytest.approx(
@@ -59,11 +61,11 @@ def test_flexround_runs_on_fixed_grids_and_returns_valid_final_codes(grid):
 
 def test_flexround_changes_codes_on_correlated_case():
     grid = toy_vanilla_grids()[1]
+    rtn_output, _ = RTNAssignment().apply_to_grid(grid)
     output, info = FlexRoundAssignment(steps=300, lr=3e-2).apply_to_grid(
         grid,
         flexround_correlated_stats(),
     )
-    rtn_output, _ = RTNAssignment().apply_to_grid(grid)
 
     assert info["changed_codes"] > 0
     assert info["final_loss"] < info["initial_loss"]
