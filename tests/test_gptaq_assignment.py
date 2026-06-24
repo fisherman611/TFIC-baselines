@@ -102,7 +102,7 @@ def test_gptaq_uses_asymmetry_to_improve_paired_output_reconstruction():
         gptaq_output, info = GPTAQAssignment(
             damp=0.01,
             block_size=2,
-            alpha=1.0,
+            alpha=0.25,
         ).apply_to_grid(grid, stats)
         target = weights @ full_precision_inputs.t()
         gptq_loss = ((gptq_output.double() @ quantized_inputs.t()) - target).square().mean()
@@ -123,12 +123,12 @@ def test_gptaq_rescomp_zero_rescomp_alpha_matches_gptaq(grid):
     gptaq_output, gptaq_info = GPTAQAssignment(
         damp=0.01,
         block_size=2,
-        alpha=1.0,
+        alpha=0.25,
     ).apply_to_grid(grid, stats)
     rescomp_output, rescomp_info = GPTAQResCompAssignment(
         damp=0.01,
         block_size=2,
-        alpha=1.0,
+        alpha=0.25,
         rescomp_alpha=0.0,
     ).apply_to_grid(grid, stats)
 
@@ -145,7 +145,7 @@ def test_gptaq_rescomp_runs_on_fixed_grids_and_returns_valid_codes(grid):
     output, info = GPTAQResCompAssignment(
         damp=0.01,
         block_size=2,
-        alpha=1.0,
+        alpha=0.25,
         rescomp_alpha=1.0,
     ).apply_to_grid(grid, stats)
 
