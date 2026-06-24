@@ -503,6 +503,3 @@ def calibrate_flatquant_block(
 
     return artifacts, targets, history
 
-
-FlatQuantTrainingConfig = FlatQuantCalibrationConfig
-train_flatquant_block = calibrate_flatquant_block

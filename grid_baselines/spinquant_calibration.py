@@ -670,8 +670,3 @@ def summarize_history(history: list[float]) -> dict[str, float | int | None]:
         "mean_loss": math.fsum(history) / len(history),
     }
 
-
-SpinQuantTrainingConfig = SpinQuantCalibrationConfig
-install_spinquant_training_wrappers = install_spinquant_calibration_wrappers
-train_spinquant_cross_entropy = calibrate_spinquant_cross_entropy
-train_spinquant_layer_rotations = calibrate_spinquant_layer_rotations

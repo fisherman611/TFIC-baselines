@@ -1,7 +1,7 @@
 """Assignment-method baseline wrappers."""
 
-from .flexround import FlexRoundAssignment
-from .flexround_calibration import (
+from .flexround import (
+    FlexRoundAssignment,
     FlexRoundCalibrationConfig,
     calibrate_flexround_block,
 )

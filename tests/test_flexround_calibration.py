@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from assignment_methods.flexround_calibration import (  # noqa: E402
+from assignment_methods.flexround import (  # noqa: E402
     FlexRoundCalibrationConfig,
     calibrate_flexround_block,
 )

@@ -18,7 +18,7 @@ from baseline_utils.calibration import (
 from baseline_utils.runtime import build_model_slug, load_runtime_env
 from baseline_utils.wandb import log_to_wandb, wandb_enabled_from_env
 from eigenflip.statistics.collect_fast import _resolve_input_device
-from assignment_methods.flexround_calibration import (
+from assignment_methods.flexround import (
     FlexRoundCalibrationConfig,
     calibrate_flexround_block,
 )
