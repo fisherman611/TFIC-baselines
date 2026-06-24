@@ -16,8 +16,8 @@ class GPTAQResCompAssignment:
         *,
         damp: float = 0.01,
         block_size: int = 128,
-        alpha: float = 0.25,
-        rescomp_alpha: float = 0.25,
+        alpha: float = 1.0,
+        rescomp_alpha: float = 1.0,
         act_order: bool = False,
         work_dtype: torch.dtype = torch.float64,
     ):
@@ -126,7 +126,6 @@ class GPTAQResCompAssignment:
             (hessian + delta_cross) @ inverse_factor.t(), diagonal=1
         ) @ inverse_factor
 
-        mode = "org" if grid.bits == 2 else "allw"
         codes = torch.zeros_like(weights)
         for start in range(0, padded_in, self.block_size):
             end = min(start + self.block_size, padded_in)
@@ -156,10 +155,7 @@ class GPTAQResCompAssignment:
                 block_codes[:, offset] = column_codes
 
                 error = (column - quantized_column) / factor_diagonal
-                if mode == "org":
-                    update_slice = slice(offset, None)
-                else:
-                    update_slice = slice(offset + 1, None)
+                update_slice = slice(offset, None)
                 block_weights[:, update_slice] -= (
                     error.unsqueeze(1)
                     * block_factor[offset, update_slice].unsqueeze(0)
@@ -178,13 +174,7 @@ class GPTAQResCompAssignment:
             codes[:, start:end] = block_codes
             if end < padded_in:
                 weights[:, end:] -= block_errors @ inverse_factor[start:end, end:]
-                if mode == "org":
-                    compensated_weights = block_weights
-                else:
-                    compensated_weights = torch.minimum(
-                        torch.maximum(block_weights, block_lower_bound),
-                        block_upper_bound,
-                    )
+                compensated_weights = block_weights
                 weights[:, end:] += compensated_weights @ correction[start:end, end:]
                 weights[:, end:] += (
                     original_weights[:, start:end] - compensated_weights
@@ -211,7 +201,6 @@ class GPTAQResCompAssignment:
             "block_size": self.block_size,
             "alpha": self.alpha,
             "rescomp_alpha": self.rescomp_alpha,
-            "rescomp_mode": mode,
             "act_order": self.act_order,
             "changed_codes": changed_from_rtn,
         }

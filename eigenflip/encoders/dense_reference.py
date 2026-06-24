@@ -163,7 +163,8 @@ class DenseGPTQ:
             H = Hp
         # diagonal damping (form ii)
         diagH = torch.diagonal(H).clone()
-        H = H + self.damp * torch.diag(diagH)
+        idx_all = torch.arange(pin, device=dev)
+        H[idx_all, idx_all] += self.damp * diagH.mean()
 
         scale = state.scale.to(wdt); zp = state.zero_point.to(wdt)
         Wf = state.float_weights.to(wdt)

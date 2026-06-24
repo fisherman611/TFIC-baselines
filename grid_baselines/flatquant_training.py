@@ -129,8 +129,8 @@ class TrainableKroneckerTransform(nn.Module):
         diagonal = self.diagonal
         if diagonal is not None:
             work = work / diagonal.float()
-        left_inv_t = torch.linalg.inv(self.left.float()).t()
-        right_inv_t = torch.linalg.inv(self.right.float()).t()
+        left_inv_t = torch.linalg.pinv(self.left.float()).t()
+        right_inv_t = torch.linalg.pinv(self.right.float()).t()
         return _apply_kronecker(work, left_inv_t, right_inv_t).to(weight.dtype)
 
     def export(self) -> dict[str, torch.Tensor]:
@@ -228,6 +228,7 @@ class FlatQuantTrainingConfig:
     add_diagonal: bool = True
     learn_weight_clipping: bool = True
     learn_activation_clipping: bool = True
+    clipping_learning_rate: float = 1e-4
 
 
 def _group_key(name: str) -> str:
@@ -329,8 +330,23 @@ def train_flatquant_block(
                 .cpu()
             )
 
-    parameters = [parameter for parameter in quantized.parameters() if parameter.requires_grad]
-    optimizer = torch.optim.AdamW(parameters, lr=config.learning_rate)
+    transform_parameters = []
+    clipping_parameters = []
+    for name, parameter in quantized.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if "clip" in name:
+            clipping_parameters.append(parameter)
+        else:
+            transform_parameters.append(parameter)
+
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": transform_parameters},
+            {"params": clipping_parameters, "lr": config.clipping_learning_rate},
+        ],
+        lr=config.learning_rate,
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=max(1, config.epochs * math.ceil(len(inputs) / config.batch_size)),
@@ -353,7 +369,7 @@ def train_flatquant_block(
                 losses.append(F.mse_loss(prediction.float(), targets[index].to(device).float()))
             loss = torch.stack(losses).mean()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(parameters, 1.0)
+            torch.nn.utils.clip_grad_norm_(transform_parameters + clipping_parameters, 1.0)
             optimizer.step()
             scheduler.step()
             epoch_loss += float(loss.detach()) * len(indices)

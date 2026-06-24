@@ -50,6 +50,7 @@ class FlexRoundAssignment:
         steps: int = 5000,
         lr: float = 2e-4,
         log_divisor_bound: float = 6.0,
+        learn_layer_scale: bool = False,
         learn_row_scale: bool = True,
         work_dtype: torch.dtype = torch.float32,
     ):
@@ -68,6 +69,7 @@ class FlexRoundAssignment:
         self.steps = steps
         self.lr = lr
         self.log_divisor_bound = log_divisor_bound
+        self.learn_layer_scale = learn_layer_scale
         self.learn_row_scale = learn_row_scale
         self.work_dtype = work_dtype
 
@@ -77,11 +79,14 @@ class FlexRoundAssignment:
         log_base_scale: torch.Tensor,
         zero_point: torch.Tensor,
         log_element_divisor: torch.Tensor,
+        log_layer_scale: torch.Tensor | None,
         log_row_scale: torch.Tensor | None,
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         log_divisor = log_element_divisor
+        if log_layer_scale is not None:
+            log_divisor = log_divisor + log_layer_scale
         if log_row_scale is not None:
             log_divisor = log_divisor + log_row_scale
         log_quant_scale = log_base_scale + log_divisor.clamp(
@@ -158,6 +163,12 @@ class FlexRoundAssignment:
 
         log_element_scale = torch.nn.Parameter(torch.zeros_like(padded_weights))
         parameters: list[torch.nn.Parameter] = [log_element_scale]
+        log_layer_scale = None
+        if self.learn_layer_scale:
+            log_layer_scale = torch.nn.Parameter(
+                torch.zeros(1, 1, device=device, dtype=dtype)
+            )
+            parameters.append(log_layer_scale)
         log_row_scale = None
         if self.learn_row_scale:
             log_row_scale = torch.nn.Parameter(
@@ -182,6 +193,7 @@ class FlexRoundAssignment:
                     log_base_scale,
                     zero_point,
                     log_element_scale,
+                    log_layer_scale,
                     log_row_scale,
                     grid.qmin,
                     grid.qmax,
@@ -206,6 +218,7 @@ class FlexRoundAssignment:
                     log_base_scale,
                     zero_point,
                     log_element_scale,
+                    log_layer_scale,
                     log_row_scale,
                     grid.qmin,
                     grid.qmax,
@@ -231,7 +244,7 @@ class FlexRoundAssignment:
             final_loss,
         )
 
-        del optimizer, parameters, log_element_scale, log_row_scale
+        del optimizer, parameters, log_element_scale, log_layer_scale, log_row_scale
         return output, info
 
     def _info(
@@ -253,6 +266,7 @@ class FlexRoundAssignment:
             "codes": final_codes.detach(),
             "steps": self.steps,
             "lr": self.lr,
+            "learn_layer_scale": self.learn_layer_scale,
             "learn_row_scale": self.learn_row_scale,
             "initial_loss": initial_loss,
             "final_loss": final_loss,

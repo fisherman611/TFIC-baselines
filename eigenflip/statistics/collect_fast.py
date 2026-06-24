@@ -329,14 +329,10 @@ def collect_and_encode_awq_style(
             restore_cached_weights(fp_weight_cache)
             handles = [m.register_forward_hook(mk_fp_hook(n)) for n, m in batch]
             for sample in tqdm(calib, desc="  calib-fp", leave=False):
-                lengths = {n: len(values) for n, values in fp_inputs.items()}
-                try:
-                    run_sample(sample)
-                    fp_samples.append(sample)
-                except Exception:
-                    for n, length in lengths.items():
-                        del fp_inputs[n][length:]
-                    continue
+                run_sample(sample)
+                fp_samples.append(sample)
+            if not fp_samples:
+                raise RuntimeError("All calibration samples failed or no samples provided.")
             for h in handles:
                 h.remove()
             restore_cached_weights(quant_weight_cache)

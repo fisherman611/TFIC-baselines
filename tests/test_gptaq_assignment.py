@@ -153,12 +153,11 @@ def test_gptaq_rescomp_runs_on_fixed_grids_and_returns_valid_codes(grid):
     assert output.dtype == grid.original_dtype
     assert info["grid_scheme"] == grid.scheme
     assert info["rescomp_alpha"] == 1.0
-    assert info["rescomp_mode"] == "org"
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)
 
 
-def test_gptaq_rescomp_defaults_match_rescomp_reference_for_3bit():
+def test_gptaq_rescomp_returns_expected_defaults():
     grid = build_vanilla_quantization_grid(
         torch.tensor(
             [
@@ -181,8 +180,7 @@ def test_gptaq_rescomp_defaults_match_rescomp_reference_for_3bit():
         alpha=1.0,
     ).apply_to_grid(grid, stats)
 
-    assert info["rescomp_alpha"] == 0.25
-    assert info["rescomp_mode"] == "allw"
+    assert info["rescomp_alpha"] == 1.0
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)
 

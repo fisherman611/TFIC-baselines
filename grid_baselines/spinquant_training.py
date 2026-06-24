@@ -41,9 +41,14 @@ def identity_spinquant_rotations(
 ) -> SpinQuantRotations:
     if num_layers <= 0:
         raise ValueError("num_layers must be positive")
+    
+    def random_orthogonal(n):
+        q, _ = torch.linalg.qr(torch.randn(n, n, dtype=torch.float64))
+        return q
+
     return SpinQuantRotations(
-        R1=torch.eye(hidden_size, dtype=torch.float64),
-        R2={idx: torch.eye(head_dim, dtype=torch.float64) for idx in range(num_layers)},
+        R1=random_orthogonal(hidden_size),
+        R2={idx: random_orthogonal(head_dim) for idx in range(num_layers)},
     )
 
 
