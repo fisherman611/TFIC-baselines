@@ -105,7 +105,13 @@ class DenseSurrogateGPTQ:
         Htilde = torch.diag(D) + V @ V.t()                 # [pin, pin]
 
         scale = state.scale.to(wdt); zp = state.zero_point.to(wdt)
-        Wf = state.float_weights.to(wdt)
+        Wf = state.float_weights.to(wdt).clone()
+        
+        diagH = torch.diagonal(Htilde).clone()
+        dead = diagH == 0.0
+        Htilde[dead, dead] = 1.0
+        Wf[:, dead] = 0.0
+
         lo, hi = float(state.min_int), float(state.max_int)
 
         order = self._order(D, V)
@@ -164,11 +170,15 @@ class DenseGPTQ:
             H = Hp
         # diagonal damping (form ii)
         diagH = torch.diagonal(H).clone()
+        dead = diagH == 0.0
+        H[dead, dead] = 1.0
+        
         idx_all = torch.arange(pin, device=dev)
         H[idx_all, idx_all] += self.damp * diagH.mean()
 
         scale = state.scale.to(wdt); zp = state.zero_point.to(wdt)
-        Wf = state.float_weights.to(wdt)
+        Wf = state.float_weights.to(wdt).clone()
+        Wf[:, dead] = 0.0
         lo, hi = float(state.min_int), float(state.max_int)
 
         if self.order == "diag":
