@@ -127,16 +127,36 @@ class TFICEncoder:
             dE = self._dE(delta, RG, diagG, in_range)
 
             tau = self._tau(dE)
+            fixed, fix_now = self._certified_fixes(
+                G, diagG, scale, pre, Wint, dE, in_range
+            )
+            nfix = int(fix_now.sum().item())
+            if nfix:
+                dR = torch.where(fix_now, delta, torch.zeros_like(delta))
+                Wint = (Wint + torch.where(
+                    fix_now, flip_dir, torch.zeros_like(flip_dir)
+                )).clamp(0, max_int)
+                R = R + dR
+                RG = R @ G
+                e_cur = (R * RG).sum().item()
+                total_flips += nfix
+                flip_dir = self._flip_dir(pre, Wint)
+                delta = flip_dir * scale
+                in_range = self._in_range(Wint, flip_dir, max_int)
+                dE = self._dE(delta, RG, diagG, in_range)
+                tau = self._tau(dE)
+                fixed, _ = self._certified_fixes(
+                    G, diagG, scale, pre, Wint, dE, in_range
+                )
 
-            # ---- adaptive transverse field (Eq. 13), U_fru fully vectorised
+            # ---- adaptive transverse field (Eq. 13)
             U_fld = torch.exp(-dE.clamp_min(0.0) / tau)
-            dk = delta[:, nbr_idx]                          # [C,pin,m]
-            U_fru = ((-2.0 * delta.unsqueeze(2) * dk * G_nbr.unsqueeze(0))
-                     .clamp_min(0.0).sum(2) / tau).clamp(max=1.0)
-            del dk
+            U_fru = self._frustration_field(
+                delta, G_nbr, nbr_idx, tau, max(1, min(self.chunk_cols, 64))
+            )
             Gamma = self.alpha * U_bnd + self.beta * U_fld + self.eta * U_fru
             Gamma = torch.where(scale > 0, Gamma, torch.zeros_like(Gamma))
-            pool = (Gamma > gamma_a) & in_range
+            pool = (Gamma > gamma_a) & in_range & ~fixed
             thresh = -self.kappa * tau
 
             # ============= Phase 1: batched descent ==================== #
@@ -161,7 +181,7 @@ class TFICEncoder:
             delta = flip_dir * scale
             in_range = self._in_range(Wint, flip_dir, max_int)
             dE = self._dE(delta, RG, diagG, in_range)
-            cand = in_range & (dE >= 0) & (dE <= self.c_cand * tau)
+            cand = in_range & ~fixed & (dE >= 0) & (dE <= self.c_cand * tau)
             cand_counts = cand.sum(1)
             rows = torch.nonzero(cand_counts >= 2, as_tuple=False).flatten()
             if rows.numel() == 0:
@@ -189,11 +209,17 @@ class TFICEncoder:
                     cols_t = torch.tensor(cols_T, device=dev)
                     dirs_t = torch.tensor(dirs_T, device=dev, dtype=wdt)
                     dT = dirs_t * scale[i, cols_t]
+                    current_gain = (
+                        2.0 * (dT * RG[i, cols_t]).sum()
+                        + dT @ (G[cols_t][:, cols_t] @ dT)
+                    )
+                    if current_gain.item() >= 0.0:
+                        continue
                     Wint[i, cols_t] = (Wint[i, cols_t] + dirs_t).clamp(0, max_int)
                     R[i, cols_t] = R[i, cols_t] + dT
                     RG[i, :] = RG[i, :] + dT @ G[cols_t, :]
                     total_cluster_moves += 1
-                    cluster_energy += -gain
+                    cluster_energy += -current_gain.item()
             # refresh exact energy after tunnelling batch
             e_cur = (R * RG).sum().item()
 
@@ -216,13 +242,12 @@ class TFICEncoder:
     # ------------------------- helpers (GPU) --------------------------- #
     @staticmethod
     def _flip_dir(pre, Wint):
-        fd = torch.sign(pre - Wint)
-        return torch.where(fd == 0, torch.ones_like(fd), fd)
+        return torch.sign(pre - Wint)
 
     @staticmethod
     def _in_range(Wint, flip_dir, max_int):
         prop = Wint + flip_dir
-        return (prop >= 0) & (prop <= max_int)
+        return (flip_dir != 0) & (prop >= 0) & (prop <= max_int)
 
     @staticmethod
     def _dE(delta, RG, diagG, in_range):
@@ -234,6 +259,80 @@ class TFICEncoder:
         finite = torch.isfinite(dE)
         tau = dE[finite].abs().median().item() if finite.any() else 0.0
         return max(tau, 1e-12)
+
+    @staticmethod
+    @torch.no_grad()
+    def _frustration_field(delta, G_nbr, nbr_idx, tau, chunk_cols):
+        """Compute U_fru without materializing [rows, cols, top_m] globally."""
+        U_fru = torch.zeros_like(delta)
+        pin = delta.shape[1]
+        cs = max(1, int(chunk_cols))
+        for c0 in range(0, pin, cs):
+            c1 = min(c0 + cs, pin)
+            cols = slice(c0, c1)
+            dj = delta[:, cols].unsqueeze(2)
+            dk = delta[:, nbr_idx[cols]]
+            gjk = G_nbr[cols].unsqueeze(0)
+            U_fru[:, cols] = (
+                (-2.0 * dj * dk * gjk).clamp_min(0.0).sum(2) / tau
+            ).clamp(max=1.0)
+            del dj, dk, gjk
+        return U_fru
+
+    @staticmethod
+    @torch.no_grad()
+    def _certified_fixes(G, diagG, scale, pre, Wint, dE, in_range):
+        """Return spins certified by Prop. 2 and certified flips to apply.
+
+        This is the dominance test from the paper in the current two-level spin
+        coordinates.  It is conservative in use: certified-current spins are
+        removed from the search pool, while certified-opposite spins are moved
+        once to their provably optimal side before the stage proceeds.
+        """
+        s_cur = -torch.sign(pre - Wint)
+        movable = in_range & (s_cur != 0) & (scale > 0)
+        if not movable.any():
+            return torch.zeros_like(movable), torch.zeros_like(movable)
+
+        H = 0.5 * scale
+        s_safe = torch.where(s_cur == 0, torch.ones_like(s_cur), s_cur)
+        F_total = -torch.where(movable, dE, torch.zeros_like(dE)) / (2.0 * s_safe)
+
+        hs = H * s_cur
+        coupling = 2.0 * H * ((hs @ G) - H * s_cur * diagG.unsqueeze(0))
+        base_field = F_total - coupling
+
+        absG = G.abs()
+        fixed = ~movable
+        fixed_spin = torch.where(fixed, s_cur, torch.zeros_like(s_cur))
+        h_eff = base_field + 2.0 * H * ((H * fixed_spin) @ G)
+        active = movable.clone()
+        bound = 2.0 * H * (
+            (H * active.to(H.dtype)) @ absG
+            - H * active.to(H.dtype) * diagG.abs().unsqueeze(0)
+        ).clamp_min(0.0)
+        fixed_target = torch.zeros_like(s_cur)
+
+        while True:
+            newly_fixed = active & (h_eff.abs() > bound)
+            if not newly_fixed.any():
+                break
+            target = -torch.sign(h_eff)
+            fixed_target = torch.where(newly_fixed, target, fixed_target)
+            active = active & ~newly_fixed
+
+            new_spin = torch.where(newly_fixed, target, torch.zeros_like(target))
+            h_eff = h_eff + 2.0 * H * ((H * new_spin) @ G)
+            bound = (
+                bound
+                - 2.0 * H * ((H * newly_fixed.to(H.dtype)) @ absG)
+            ).clamp_min(0.0)
+        del absG
+
+        certified = fixed_target != 0
+        fix_now = certified & (fixed_target != s_cur)
+        fixed = certified & ~fix_now
+        return fixed, fix_now
 
     @torch.no_grad()
     def _descend_chunk(self, cols, Wint, R, RG, G, diagG, scale, pre, pool,

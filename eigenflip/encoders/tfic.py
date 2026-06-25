@@ -133,10 +133,10 @@ class TFICEncoder:
 
             # ----- current single-flip geometry
             flip_dir = torch.sign(pre - Wint)
-            flip_dir = torch.where(flip_dir == 0,
-                                   torch.ones_like(flip_dir), flip_dir)
             proposed = Wint + flip_dir
-            in_range = (proposed >= 0) & (proposed <= max_int)
+            in_range = (
+                (flip_dir != 0) & (proposed >= 0) & (proposed <= max_int)
+            )
             delta = flip_dir * scale                       # residual change on flip
             # single-flip gain dE_j (Eq. 15)
             dE = 2.0 * delta * RG + delta * delta * diagG.unsqueeze(0)
@@ -149,6 +149,34 @@ class TFICEncoder:
             else:
                 tau = 0.0
             tau = max(tau, 1e-12)
+            fixed, fix_now = self._certified_fixes(
+                G, diagG, scale, pre, Wint, dE, in_range
+            )
+            if fix_now.any():
+                dR = torch.where(fix_now, delta, torch.zeros_like(delta))
+                Wint = (Wint + torch.where(
+                    fix_now, flip_dir, torch.zeros_like(flip_dir)
+                )).clamp(0, max_int)
+                R = R + dR
+                RG = R @ G
+                total_flips += int(fix_now.sum().item())
+
+                flip_dir = torch.sign(pre - Wint)
+                proposed = Wint + flip_dir
+                in_range = (
+                    (flip_dir != 0) & (proposed >= 0) & (proposed <= max_int)
+                )
+                delta = flip_dir * scale
+                dE = 2.0 * delta * RG + delta * delta * diagG.unsqueeze(0)
+                dE = torch.where(
+                    in_range, dE, torch.full_like(dE, float("inf"))
+                )
+                finite = torch.isfinite(dE)
+                tau = dE[finite].abs().median().item() if finite.any() else 0.0
+                tau = max(tau, 1e-12)
+                fixed, _ = self._certified_fixes(
+                    G, diagG, scale, pre, Wint, dE, in_range
+                )
 
             # ----- adaptive transverse field (Eq. 13)
             U_fld = torch.exp(-dE.clamp_min(0.0) / tau)    # energy mobility (inf->0)
@@ -170,7 +198,7 @@ class TFICEncoder:
 
             Gamma = self.alpha * U_bnd + self.beta * U_fld + self.eta * U_fru
             Gamma = torch.where(scale > 0, Gamma, torch.zeros_like(Gamma))
-            pool = (Gamma > gamma_a) & in_range            # active spins U
+            pool = (Gamma > gamma_a) & in_range & ~fixed   # active spins U
 
             # ===================== Phase 1: descend ====================== #
             for _ in range(self.sweeps):
@@ -200,8 +228,6 @@ class TFICEncoder:
                     RG += torch.outer(dR, G[j, :])
                     # refresh flip geometry for column j (sign may have changed)
                     fdj_new = torch.sign(pre[:, j] - Wint[:, j])
-                    fdj_new = torch.where(fdj_new == 0,
-                                          torch.ones_like(fdj_new), fdj_new)
                     flip_dir[:, j] = fdj_new
                 if flips_this_sweep == 0:
                     break
@@ -211,16 +237,16 @@ class TFICEncoder:
                 continue
             # recompute single-flip gains at the local minimum
             flip_dir = torch.sign(pre - Wint)
-            flip_dir = torch.where(flip_dir == 0,
-                                   torch.ones_like(flip_dir), flip_dir)
             delta = flip_dir * scale
             proposed = Wint + flip_dir
-            in_range = (proposed >= 0) & (proposed <= max_int)
+            in_range = (
+                (flip_dir != 0) & (proposed >= 0) & (proposed <= max_int)
+            )
             dE = 2.0 * delta * RG + delta * delta * diagG.unsqueeze(0)
             dE = torch.where(in_range, dE, torch.full_like(dE, float("inf")))
 
             # candidate spins pressed against a barrier: 0 <= dE <= c_cand*tau
-            cand = in_range & (dE >= 0) & (dE <= self.c_cand * tau)
+            cand = in_range & ~fixed & (dE >= 0) & (dE <= self.c_cand * tau)
             cand_counts = cand.sum(1)
             rows = torch.nonzero(cand_counts >= 2, as_tuple=False).flatten()
             if rows.numel() == 0:
@@ -345,6 +371,54 @@ class TFICEncoder:
             used.update(T)
 
         return moves, released
+
+    @staticmethod
+    @torch.no_grad()
+    def _certified_fixes(G, diagG, scale, pre, Wint, dE, in_range):
+        s_cur = -torch.sign(pre - Wint)
+        movable = in_range & (s_cur != 0) & (scale > 0)
+        if not movable.any():
+            return torch.zeros_like(movable), torch.zeros_like(movable)
+
+        H = 0.5 * scale
+        s_safe = torch.where(s_cur == 0, torch.ones_like(s_cur), s_cur)
+        F_total = -torch.where(movable, dE, torch.zeros_like(dE)) / (2.0 * s_safe)
+
+        hs = H * s_cur
+        coupling = 2.0 * H * ((hs @ G) - H * s_cur * diagG.unsqueeze(0))
+        base_field = F_total - coupling
+
+        absG = G.abs()
+        fixed = ~movable
+        fixed_spin = torch.where(fixed, s_cur, torch.zeros_like(s_cur))
+        h_eff = base_field + 2.0 * H * ((H * fixed_spin) @ G)
+        active = movable.clone()
+        bound = 2.0 * H * (
+            (H * active.to(H.dtype)) @ absG
+            - H * active.to(H.dtype) * diagG.abs().unsqueeze(0)
+        ).clamp_min(0.0)
+        fixed_target = torch.zeros_like(s_cur)
+
+        while True:
+            newly_fixed = active & (h_eff.abs() > bound)
+            if not newly_fixed.any():
+                break
+            target = -torch.sign(h_eff)
+            fixed_target = torch.where(newly_fixed, target, fixed_target)
+            active = active & ~newly_fixed
+
+            new_spin = torch.where(newly_fixed, target, torch.zeros_like(target))
+            h_eff = h_eff + 2.0 * H * ((H * new_spin) @ G)
+            bound = (
+                bound
+                - 2.0 * H * ((H * newly_fixed.to(H.dtype)) @ absG)
+            ).clamp_min(0.0)
+        del absG
+
+        certified = fixed_target != 0
+        fix_now = certified & (fixed_target != s_cur)
+        fixed = certified & ~fix_now
+        return fixed, fix_now
 
 
 def make_tfic(alpha=1.0, beta=1.0, eta=1.0, gamma_th=0.5, kappa=2.0,
