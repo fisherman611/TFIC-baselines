@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -8,6 +10,7 @@ from assignment_methods import (
     QronusAssignment,
     stats_from_paired_inputs,
 )
+from scripts.run_quantization_baseline import build_grid
 from tests.test_gptaq_assignment import paired_inputs
 from tests.examples import toy_awq_grids, toy_vanilla_grids
 
@@ -46,6 +49,43 @@ def test_qronus_runs_on_fixed_grids_and_returns_valid_codes(grid):
     assert info["act_order"] is True
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)
+
+
+def test_qronus_runner_builds_channelwise_grid():
+    weights = torch.tensor(
+        [
+            [-1.0, -0.5, 0.25, 0.75, 1.5],
+            [-2.0, -0.25, 0.5, 1.0, 2.0],
+        ]
+    )
+    args = SimpleNamespace(
+        assignment="qronus",
+        bits=3,
+        group_size=-1,
+        scheme="asymmetric",
+    )
+
+    grid = build_grid("vanilla", weights, args, None, None, None)
+
+    assert grid.group_size == weights.shape[1]
+    assert grid.padded_in_features == weights.shape[1]
+    assert torch.all(grid.scale == grid.scale[:, :1])
+    assert torch.all(grid.zero_point == grid.zero_point[:, :1])
+
+
+def test_non_qronus_runner_keeps_requested_group_size():
+    weights = torch.randn(2, 5)
+    args = SimpleNamespace(
+        assignment="gptq",
+        bits=3,
+        group_size=2,
+        scheme="asymmetric",
+    )
+
+    grid = build_grid("vanilla", weights, args, None, None, None)
+
+    assert grid.group_size == 2
+    assert grid.padded_in_features == 6
 
 
 def test_qronus_requires_paired_cross_moment():

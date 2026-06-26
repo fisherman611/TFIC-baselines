@@ -107,7 +107,11 @@ echo "run ppl: $RUN_PPL | run lm-eval: $RUN_LM_EVAL | wandb: $RUN_WANDB | delete
 for GRID in $GRIDS; do
   for SCHEME in $SCHEMES; do
     for ASSIGNMENT in $ASSIGNMENTS; do
-      RUN_NAME="${MODEL_TAG}_${GRID}_${SCHEME}_${ASSIGNMENT}_w${BITS}g${GROUP_SIZE}_${CALIB_DATASET}n${N_CALIB}"
+      METHOD_GROUP_SIZE="$GROUP_SIZE"
+      if [[ "$ASSIGNMENT" == "qronus" ]]; then
+        METHOD_GROUP_SIZE=-1
+      fi
+      RUN_NAME="${MODEL_TAG}_${GRID}_${SCHEME}_${ASSIGNMENT}_w${BITS}g${METHOD_GROUP_SIZE}_${CALIB_DATASET}n${N_CALIB}"
       CKPT_DIR="$OUTPUT_DIR/$RUN_NAME"
 
       case "$ASSIGNMENT" in
@@ -224,7 +228,7 @@ for GRID in $GRIDS; do
         --scheme "$SCHEME" \
         --assignment "$ASSIGNMENT" \
         --bits "$BITS" \
-        --group-size "$GROUP_SIZE" \
+        --group-size "$METHOD_GROUP_SIZE" \
         --calib-dataset "$CALIB_DATASET" \
         --n-calib "$N_CALIB" \
         --seqlen "$SEQLEN" \
@@ -310,7 +314,7 @@ PY
           --scheme "$SCHEME"
           --assignment "$ASSIGNMENT"
           --bits "$BITS"
-          --group-size "$GROUP_SIZE"
+          --group-size "$METHOD_GROUP_SIZE"
           --calib-dataset "$CALIB_DATASET"
           --n-calib "$N_CALIB"
           --seqlen "$SEQLEN"

@@ -170,12 +170,15 @@ def load_awq_layer_params(path: str | None, args=None) -> dict[str, dict]:
     if args is None:
         return params
 
+    skip_group_size_check = getattr(args, "assignment", None) == "qronus"
     for layer_name, info in params.items():
-        for field, expected in (
+        expected_fields = [
             ("bits", args.bits),
-            ("group_size", args.group_size),
             ("scheme", args.scheme),
-        ):
+        ]
+        if not skip_group_size_check:
+            expected_fields.insert(1, ("group_size", args.group_size))
+        for field, expected in expected_fields:
             actual = info.get(field)
             if actual is not None and actual != expected:
                 raise ValueError(
@@ -189,6 +192,14 @@ def load_awq_layer_params(path: str | None, args=None) -> dict[str, dict]:
                 f"{artifact_model!r}, requested model is {args.model_path!r}"
             )
     return params
+
+
+def effective_weight_group_size(args, weights: torch.Tensor) -> int:
+    """Return the layer-local weight group size for the requested assignment."""
+
+    if getattr(args, "assignment", None) == "qronus":
+        return int(weights.shape[1])
+    return int(args.group_size)
 
 
 def load_flatquant_diag_params(path: str | None) -> dict[str, dict[str, torch.Tensor]]:
@@ -254,11 +265,12 @@ def build_grid(
     flatquant_diag_params: dict[str, torch.Tensor] | None,
     awq_clip_max: torch.Tensor | None = None,
 ):
+    group_size = effective_weight_group_size(args, weights)
     if name == "vanilla":
         return build_vanilla_quantization_grid(
             weights,
             bits=args.bits,
-            group_size=args.group_size,
+            group_size=group_size,
             scheme=args.scheme,
         )
     if name == "awq":
@@ -268,7 +280,7 @@ def build_grid(
             weights,
             awq_scales,
             bits=args.bits,
-            group_size=args.group_size,
+            group_size=group_size,
             scheme=args.scheme,
             clip_max=awq_clip_max,
         )
@@ -282,7 +294,7 @@ def build_grid(
                 torch.ones(weights.shape[1], device=weights.device),
             ),
             bits=args.bits,
-            group_size=args.group_size,
+            group_size=group_size,
             scheme=args.scheme,
             weight_clip=flatquant_diag_params.get("weight_clip", 1.0),
             weight_clip_max=flatquant_diag_params.get("weight_clip_max"),
@@ -295,7 +307,7 @@ def build_grid(
             weights,
             stats,
             bits=args.bits,
-            group_size=args.group_size,
+            group_size=group_size,
             scheme=args.scheme,
             scale_candidates=args.neuqi_scale_candidates,
             coarse_candidates=args.neuqi_coarse_candidates,
@@ -306,7 +318,7 @@ def build_grid(
         return build_spinquant_quantization_grid(
             weights,
             bits=args.bits,
-            group_size=args.group_size,
+            group_size=group_size,
             scheme=args.scheme,
         )
     raise ValueError(f"unknown grid baseline: {name}")
@@ -380,7 +392,12 @@ def parse_args():
     parser.add_argument("--assignment", choices=sorted(NEED_H), required=True)
     parser.add_argument("--scheme", choices=["asymmetric", "symmetric"], default="asymmetric")
     parser.add_argument("--bits", type=int, default=3, choices=[2, 3, 4, 8])
-    parser.add_argument("--group-size", type=int, default=128)
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=128,
+        help="Weight group size. For assignment=qronus, -1 denotes per-channel.",
+    )
     parser.add_argument("--awq-scales-pt", default=None)
     parser.add_argument(
         "--flatquant-params-pt",
@@ -825,6 +842,9 @@ def main():
         module.weight.data = corrected.to(module.weight.dtype)
         del grid, corrected
 
+    effective_group_size = (
+        "per-channel" if args.assignment == "qronus" else str(args.group_size)
+    )
     print(
         "quantizing",
         f"grid={args.grid}",
@@ -832,6 +852,7 @@ def main():
         f"assignment={args.assignment}",
         f"bits={args.bits}",
         f"group_size={args.group_size}",
+        f"effective_group_size={effective_group_size}",
         f"need_H={need_h}",
         f"device_map={args.device_map}",
         f"input_device={args.input_device}",
