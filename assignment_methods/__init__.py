@@ -8,6 +8,7 @@ from .flexround import (
 from .gptaq import GPTAQAssignment, stats_from_paired_inputs
 from .gptaq_rescomp import GPTAQResCompAssignment
 from .gptq import GPTQAssignment
+from .qronus import QronusAssignment
 from .rtn import RTNAssignment
 from .state_adapter import state_from_grid, state_from_vanilla_grid
 from .stats import identity_layer_stats
@@ -20,6 +21,7 @@ __all__ = [
     "GPTAQAssignment",
     "GPTAQResCompAssignment",
     "GPTQAssignment",
+    "QronusAssignment",
     "RTNAssignment",
     "TFICAssignment",
     "identity_layer_stats",

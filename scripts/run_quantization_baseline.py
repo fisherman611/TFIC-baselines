@@ -28,6 +28,7 @@ from assignment_methods import (
     GPTAQAssignment,
     GPTAQResCompAssignment,
     GPTQAssignment,
+    QronusAssignment,
     RTNAssignment,
     TFICAssignment,
 )
@@ -76,10 +77,11 @@ NEED_H = {
     "gptaq": True,
     "gptaq_rescomp": True,
     "gptq": True,
+    "qronus": True,
     "tfic": True,
 }
-KEEP_SIGMA = {"gptaq", "gptaq_rescomp", "gptq", "tfic"}
-PAIRED_ASSIGNMENTS = {"gptaq", "gptaq_rescomp"}
+KEEP_SIGMA = {"gptaq", "gptaq_rescomp", "gptq", "qronus", "tfic"}
+PAIRED_ASSIGNMENTS = {"gptaq", "gptaq_rescomp", "qronus"}
 
 
 def assignment_needs_h(name: str, k: int) -> bool:
@@ -110,6 +112,22 @@ def build_assignment(name: str, args):
             rescomp_alpha=args.rescomp_alpha,
             rescomp_mode=args.rescomp_mode,
             act_order=args.gptaq_act_order,
+        )
+    if name == "qronus":
+        qronus_alpha = args.qronus_alpha
+        if args.qronus_damp is not None:
+            qronus_alpha = args.qronus_damp
+        if qronus_alpha is None:
+            has_activation_quantization = (
+                args.activation_bits < 16
+                or args.q_bits < 16
+                or args.k_bits < 16
+                or args.v_bits < 16
+            )
+            qronus_alpha = 1e-3 if has_activation_quantization else 1e-6
+        return QronusAssignment(
+            alpha=qronus_alpha,
+            act_order=args.qronus_act_order,
         )
     if name == "flexround":
         return FlexRoundAssignment(
@@ -529,6 +547,27 @@ def parse_args():
         choices=["float16", "bfloat16", "float32"],
         default="float16",
         help="CPU dtype for temporary full-precision activation cache.",
+    )
+    parser.add_argument(
+        "--qronus-alpha",
+        type=float,
+        default=None,
+        help=(
+            "Qronus spectral damping coefficient. Defaults to 1e-6 for "
+            "weight-only runs and 1e-3 when activation/K/V/Q quantization is enabled."
+        ),
+    )
+    parser.add_argument(
+        "--qronus-damp",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--qronus-act-order",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Process Qronus columns in descending Hessian diagonal order.",
     )
 
     parser.add_argument("--flexround-steps", type=int, default=5000)

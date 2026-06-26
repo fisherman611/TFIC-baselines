@@ -42,6 +42,7 @@ The assignment methods will be applied on top of the following quantization grid
 - [X] ~~**FlatQuant**~~
 - [X] ~~**SpinQuant**~~
 - [X] ~~**NeUQI**~~
+- [ ] **Qronus**
 
 Implemented support note:
 

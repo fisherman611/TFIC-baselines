@@ -19,7 +19,7 @@ from .transformed_linear import fake_quantize_activation
 
 @dataclass
 class SpinQuantCalibrationConfig:
-    weight_bits: int = 4
+    weight_bits: int = 3
     weight_group_size: int = 128
     weight_scheme: str = "asymmetric"
     activation_bits: int = 16
@@ -669,4 +669,3 @@ def summarize_history(history: list[float]) -> dict[str, float | int | None]:
         "min_loss": min(history),
         "mean_loss": math.fsum(history) / len(history),
     }
-

@@ -388,7 +388,7 @@ class FlexRoundLinear(nn.Module):
 
 @dataclass
 class FlexRoundCalibrationConfig:
-    weight_bits: int = 4
+    weight_bits: int = 3
     weight_symmetric: bool = False
     iters: int = 5000
     batch_size: int = 1

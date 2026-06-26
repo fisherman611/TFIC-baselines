@@ -216,7 +216,7 @@ class CalibrationFlatQuantLinear(nn.Module):
 
 @dataclass
 class FlatQuantCalibrationConfig:
-    weight_bits: int = 4
+    weight_bits: int = 3
     activation_bits: int = 4
     weight_symmetric: bool = True
     activation_symmetric: bool = True
@@ -502,4 +502,3 @@ def calibrate_flatquant_block(
         })
 
     return artifacts, targets, history
-
