@@ -18,7 +18,10 @@ from eigenflip.quantization.awq_scales import (  # noqa: E402
     compute_awq_scales,
     layer_params_from_awq_run,
 )
-from scripts.generate_awq_scales import AWQScaleAccumulator  # noqa: E402
+from scripts.generate_awq_scales import (  # noqa: E402
+    AWQScaleAccumulator,
+    effective_awq_group_size,
+)
 from scripts.run_quantization_baseline import load_awq_layer_params  # noqa: E402
 
 
@@ -58,6 +61,13 @@ def test_awq_scale_search_returns_normalized_positive_scales():
     assert torch.isfinite(scales).all()
     assert torch.all(scales > 0)
     assert torch.allclose(scales.max() * scales.min(), torch.tensor(1.0), atol=1e-5)
+
+
+def test_awq_generation_group_size_minus_one_is_channelwise():
+    weights = torch.randn(4, 7)
+
+    assert effective_awq_group_size(-1, weights) == 7
+    assert effective_awq_group_size(4, weights) == 4
 
 
 def test_awq_clip_search_does_not_increase_sampled_group_error():

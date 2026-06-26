@@ -143,7 +143,12 @@ def parse_args():
     parser.add_argument("--output-dir", default="./outputs/awq_scales")
     parser.add_argument("--scheme", choices=["asymmetric", "symmetric"], default="asymmetric")
     parser.add_argument("--bits", type=int, default=3, choices=[2, 3, 4, 8])
-    parser.add_argument("--group-size", type=int, default=128)
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=128,
+        help="Weight group size. Use -1 for per-channel AWQ scale search.",
+    )
     parser.add_argument("--n-grid", type=int, default=20)
     parser.add_argument("--sample-tokens", type=int, default=512)
     parser.add_argument(
@@ -164,6 +169,18 @@ def parse_args():
     parser.add_argument("--device-map", default=os.getenv("MODEL_DEVICE_MAP", "auto"))
     parser.add_argument("--input-device", default=os.getenv("INPUT_DEVICE", "auto"))
     return parser.parse_args()
+
+
+def effective_awq_group_size(requested_group_size: int, weights: torch.Tensor) -> int:
+    """Return the layer-local AWQ group size, with -1 denoting per-channel."""
+
+    if requested_group_size == -1:
+        return int(weights.shape[1])
+    if requested_group_size <= 0:
+        raise ValueError(
+            f"--group-size must be positive or -1 for per-channel, got {requested_group_size}"
+        )
+    return int(requested_group_size)
 
 
 @torch.no_grad()
@@ -302,12 +319,16 @@ def main():
         for name, module in tqdm(batch, desc="  awq scale search", leave=False):
             acc = accs[name]
             x_sample = acc.x_sample()
+            layer_group_size = effective_awq_group_size(
+                args.group_size,
+                module.weight.data,
+            )
             scales, alpha, error = compute_awq_scales(
                 module.weight.data,
                 acc.activation_scale(),
                 x_sample,
                 bits=args.bits,
-                group_size=args.group_size,
+                group_size=layer_group_size,
                 n_grid=args.n_grid,
                 scheme=args.scheme,
             )
@@ -323,7 +344,7 @@ def main():
                     x_sample.to(device=weight.device, dtype=weight.dtype)
                     / scales_on_weight.unsqueeze(0),
                     bits=args.bits,
-                    group_size=args.group_size,
+                    group_size=layer_group_size,
                     scheme=args.scheme,
                     n_grid=args.clip_grid,
                     max_shrink=args.clip_max_shrink,
@@ -337,6 +358,7 @@ def main():
                 "scheme": args.scheme,
                 "bits": args.bits,
                 "group_size": args.group_size,
+                "effective_group_size": layer_group_size,
                 "model_path": args.model_path,
                 "format_version": 2,
                 "activation_statistic": "mean_abs",
