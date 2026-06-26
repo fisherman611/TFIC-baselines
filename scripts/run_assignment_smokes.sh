@@ -48,7 +48,7 @@ fi
 
 GRIDS=${GRIDS:-"vanilla awq flatquant spinquant_had neuqi"}
 SCHEMES=${SCHEMES:-"asymmetric symmetric"}
-METHODS=${METHODS:-"rtn gptq gptaq gptaq_rescomp flexround tfic"}
+METHODS=${METHODS:-"rtn gptq gptaq gptaq_rescomp qronus flexround tfic"}
 
 BITS=${BITS:-3}
 GROUP_SIZE=${GROUP_SIZE:-128}

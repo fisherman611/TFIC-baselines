@@ -18,7 +18,7 @@ AWQ_SCALES_PT=${AWQ_SCALES_PT:-./outputs/awq_scales/llama31_8b_awq_asym_w3g128_c
 OUTPUT_DIR=${OUTPUT_DIR:-./quantized_models/awq_assignment_smoke_eval}
 RESULT_DIR=${RESULT_DIR:-./results/awq_assignment_smoke_eval}
 RUN_PREFIX=${RUN_PREFIX:-llama31_8b_awq_asym}
-METHODS=${METHODS:-"rtn gptq gptaq gptaq_rescomp flexround tfic"}
+METHODS=${METHODS:-"rtn gptq gptaq gptaq_rescomp qronus flexround tfic"}
 
 SCHEME=${SCHEME:-asymmetric}
 BITS=${BITS:-3}

@@ -53,7 +53,7 @@ STATS_DEVICE=${STATS_DEVICE:-layer}
 
 GRIDS=${GRIDS:-"vanilla awq flatquant spinquant_had neuqi"}
 SCHEMES=${SCHEMES:-"asymmetric symmetric"}
-ASSIGNMENTS=${ASSIGNMENTS:-"rtn gptq gptaq gptaq_rescomp flexround tfic"}
+ASSIGNMENTS=${ASSIGNMENTS:-"rtn gptq gptaq gptaq_rescomp qronus flexround tfic"}
 
 FLEXROUND_STEPS=${FLEXROUND_STEPS:-5000}
 FLEXROUND_LR=${FLEXROUND_LR:-3e-3}
