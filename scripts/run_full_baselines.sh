@@ -127,6 +127,10 @@ for GRID in $GRIDS; do
           LBS=${LBS_GPTAQ_RESCOMP:-1}
           EXTRA_ARGS=(--eig-on-cpu)
           ;;
+        qronus)
+          LBS=${LBS_QRONUS:-1}
+          EXTRA_ARGS=(--eig-on-cpu)
+          ;;
         flexround)
           LBS=${LBS_FLEXROUND:-4}
           EXTRA_ARGS=(
