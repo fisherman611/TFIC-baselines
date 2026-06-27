@@ -71,6 +71,23 @@ def test_awq_grid_round_to_nearest_shape_and_range():
         assert torch.all(integer_weights <= grid.qmax)
 
 
+def test_awq_grid_group_size_minus_one_is_channelwise():
+    weights, awq_scales = awq_toy_inputs()
+
+    grid = build_awq_quantization_grid(
+        weights,
+        awq_scales,
+        bits=3,
+        group_size=-1,
+        scheme="asymmetric",
+    )
+
+    assert grid.group_size == weights.shape[1]
+    assert grid.padded_in_features == weights.shape[1]
+    assert grid.scale.shape == weights.shape
+    assert grid.zero_point.shape == weights.shape
+
+
 def test_awq_scheme_helpers_match_main_builder():
     weights, awq_scales = awq_toy_inputs()
 

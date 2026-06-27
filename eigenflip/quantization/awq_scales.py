@@ -15,12 +15,16 @@ import torch
 def _validate_quant_args(bits: int, group_size: int, scheme: str) -> None:
     if bits <= 0:
         raise ValueError(f"bits must be positive, got {bits}")
-    if group_size <= 0:
-        raise ValueError(f"group_size must be positive, got {group_size}")
+    if group_size <= 0 and group_size != -1:
+        raise ValueError(f"group_size must be positive or -1, got {group_size}")
     if scheme not in {"asymmetric", "symmetric"}:
         raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
     if scheme == "symmetric" and bits < 2:
         raise ValueError("symmetric AWQ quantization requires bits >= 2")
+
+
+def _effective_group_size(group_size: int, in_features: int) -> int:
+    return in_features if group_size == -1 else group_size
 
 
 def _minimum_range(reference: torch.Tensor, eps: float) -> torch.Tensor:
@@ -67,6 +71,7 @@ def _groupwise_quant(W, bits, group_size, scheme="asymmetric", clip_max=None):
         raise ValueError(f"expected a 2D weight tensor, got shape {tuple(W.shape)}")
 
     rows, in_features = W.shape
+    group_size = _effective_group_size(group_size, in_features)
     n_groups = (in_features + group_size - 1) // group_size
     padded_in = n_groups * group_size
     if padded_in > in_features:
@@ -120,6 +125,7 @@ def compute_awq_scales(
         raise ValueError(f"n_grid must be positive, got {n_grid}")
 
     device, dtype = W.device, W.dtype
+    group_size = _effective_group_size(group_size, W.shape[1])
     activation_scale = salience_l2.to(device=device, dtype=torch.float32).reshape(-1)
     if activation_scale.numel() != W.shape[1]:
         raise ValueError(
@@ -175,6 +181,7 @@ def compute_awq_clip(
         raise ValueError("sample_tokens and output_chunk_size must be positive")
 
     rows, in_features = W_scaled.shape
+    group_size = _effective_group_size(group_size, in_features)
     inputs = X_scaled.to(device=W_scaled.device, dtype=W_scaled.dtype)
     inputs = inputs.reshape(-1, in_features)
     if inputs.shape[0] > sample_tokens:

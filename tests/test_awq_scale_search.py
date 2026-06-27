@@ -70,6 +70,32 @@ def test_awq_generation_group_size_minus_one_is_channelwise():
     assert effective_awq_group_size(4, weights) == 4
 
 
+def test_awq_search_group_size_minus_one_is_channelwise():
+    torch.manual_seed(2)
+    weights = torch.randn(4, 7)
+    inputs = torch.randn(16, 7)
+    activation_scale = inputs.abs().mean(0)
+
+    scales, _alpha, _error = compute_awq_scales(
+        weights,
+        activation_scale,
+        inputs,
+        bits=3,
+        group_size=-1,
+        n_grid=4,
+    )
+    clip_max = compute_awq_clip(
+        weights * scales.unsqueeze(0),
+        inputs / scales.unsqueeze(0),
+        bits=3,
+        group_size=-1,
+        n_grid=4,
+    )
+
+    assert scales.shape == (7,)
+    assert clip_max.shape == (4, 1, 1)
+
+
 def test_awq_clip_search_does_not_increase_sampled_group_error():
     torch.manual_seed(1)
     weights = torch.randn(6, 8)

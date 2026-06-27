@@ -109,6 +109,10 @@ def _minimum_range(reference: torch.Tensor, eps: float) -> torch.Tensor:
     return floor
 
 
+def _effective_group_size(group_size: int, in_features: int) -> int:
+    return in_features if group_size == -1 else group_size
+
+
 @torch.no_grad()
 def build_awq_quantization_grid(
     weights: torch.Tensor,
@@ -136,14 +140,15 @@ def build_awq_quantization_grid(
         raise ValueError(f"expected a 2D weight tensor, got shape {tuple(weights.shape)}")
     if bits <= 0:
         raise ValueError(f"bits must be positive, got {bits}")
-    if group_size <= 0:
-        raise ValueError(f"group_size must be positive, got {group_size}")
+    if group_size <= 0 and group_size != -1:
+        raise ValueError(f"group_size must be positive or -1, got {group_size}")
     if scheme not in {"asymmetric", "symmetric"}:
         raise ValueError(f"scheme must be 'asymmetric' or 'symmetric', got {scheme!r}")
     if scheme == "symmetric" and bits < 2:
         raise ValueError("symmetric AWQ quantization requires bits >= 2")
 
     rows, in_features = weights.shape
+    group_size = _effective_group_size(group_size, in_features)
     device, dtype = weights.device, weights.dtype
     scales = awq_scales.to(device=device, dtype=dtype).reshape(1, -1)
     if scales.shape[1] != in_features:
