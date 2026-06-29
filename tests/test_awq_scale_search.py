@@ -152,3 +152,44 @@ def test_awq_runner_rejects_mismatched_artifact(tmp_path):
 
     with pytest.raises(ValueError, match="bits=4"):
         load_awq_layer_params(str(path), args)
+
+
+def test_awq_runner_rejects_groupwise_artifact_for_qronus(tmp_path):
+    path = tmp_path / "awq-g128.pt"
+    torch.save(
+        {
+            "layer": {
+                "scales": torch.ones(4),
+                "bits": 3,
+                "group_size": 128,
+                "scheme": "asymmetric",
+                "model_path": "model-a",
+            }
+        },
+        path,
+    )
+    args = SimpleNamespace(
+        assignment="qronus",
+        bits=3,
+        group_size=-1,
+        scheme="asymmetric",
+        model_path="model-a",
+    )
+
+    with pytest.raises(ValueError, match="group_size=128"):
+        load_awq_layer_params(str(path), args)
+
+
+def test_awq_runner_rejects_unidentified_group_size_for_qronus(tmp_path):
+    path = tmp_path / "awq-legacy.pt"
+    torch.save({"layer": torch.ones(4)}, path)
+    args = SimpleNamespace(
+        assignment="qronus",
+        bits=3,
+        group_size=-1,
+        scheme="asymmetric",
+        model_path="model-a",
+    )
+
+    with pytest.raises(ValueError, match="must record group_size=-1"):
+        load_awq_layer_params(str(path), args)

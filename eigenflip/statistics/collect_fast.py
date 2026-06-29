@@ -24,6 +24,8 @@ Activations are never materialized; the giant list is gone.
 from __future__ import annotations
 
 import gc
+import re
+from contextlib import contextmanager, nullcontext
 from typing import Optional
 
 import torch
@@ -80,6 +82,62 @@ def _assignment_input(module: nn.Module, value: torch.Tensor) -> torch.Tensor:
     if callable(transform):
         return transform(value)
     return value
+
+
+def _reference_assignment_input(
+    module: nn.Module, value: torch.Tensor
+) -> torch.Tensor:
+    """Return transformed, non-quantized inputs for the reference pass."""
+
+    transform = getattr(module, "transformed_input", None)
+    if callable(transform):
+        return transform(value)
+    return value
+
+
+def _module_block_key(name: str) -> str:
+    """Return a stable transformer-block prefix for a linear module name."""
+
+    match = re.search(r"(?:^|\.)(?:layers|blocks|block|h)\.(\d+)(?:\.|$)", name)
+    if match is not None:
+        return name[: match.end(1)]
+    parent, separator, _child = name.rpartition(".")
+    return parent if separator else name
+
+
+@contextmanager
+def _temporarily_disable_runtime_quantization(
+    model: nn.Module, *, enabled_block: str | None = None
+):
+    """Disable fake quantization globally or outside one transformer block."""
+
+    bit_attributes = (
+        "activation_bits",
+        "output_bits",
+        "_flatquant_q_bits",
+        "_flatquant_k_bits",
+        "_flatquant_v_bits",
+        "_spinquant_k_bits",
+    )
+    saved = []
+    for module_name, module in model.named_modules():
+        if (
+            enabled_block is not None
+            and _module_block_key(module_name) == enabled_block
+        ):
+            continue
+        for attribute in bit_attributes:
+            if not hasattr(module, attribute):
+                continue
+            value = getattr(module, attribute)
+            if isinstance(value, int) and not isinstance(value, bool):
+                saved.append((module, attribute, value))
+                setattr(module, attribute, 16)
+    try:
+        yield
+    finally:
+        for module, attribute, value in reversed(saved):
+            setattr(module, attribute, value)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +288,8 @@ def collect_and_encode_awq_style(
     max_layers=None,
     paired_full_precision=False,
     paired_cache_dtype=torch.float16,
+    paired_reset_by_block=False,
+    paired_disable_reference_quantization=False,
 ):
     """
     calib: list of pre-tokenized [1,L] tensors OR text strings.
@@ -280,6 +340,19 @@ def collect_and_encode_awq_style(
                 )
             )
 
+    def restore_quantized_path(current_name):
+        restore_cached_weights(fp_weight_cache)
+        if paired_reset_by_block:
+            block_key = _module_block_key(current_name)
+            cache = {
+                name: weight
+                for name, weight in quant_weight_cache.items()
+                if _module_block_key(name) == block_key
+            }
+        else:
+            cache = quant_weight_cache
+        restore_cached_weights(cache)
+
     def run_sample(sample):
         if torch.is_tensor(sample):
             ids = sample.to(input_device, non_blocking=True)
@@ -325,7 +398,11 @@ def collect_and_encode_awq_style(
             def mk_fp_hook(nm):
                 def hook(_m, inp, _o):
                     x = inp[0] if isinstance(inp, tuple) else inp
-                    x = _assignment_input(_m, x)
+                    x = (
+                        _reference_assignment_input(_m, x)
+                        if paired_disable_reference_quantization
+                        else _assignment_input(_m, x)
+                    )
                     fp_inputs[nm].append(
                         x.detach().to("cpu", dtype=paired_cache_dtype)
                     )
@@ -333,14 +410,20 @@ def collect_and_encode_awq_style(
 
             restore_cached_weights(fp_weight_cache)
             handles = [m.register_forward_hook(mk_fp_hook(n)) for n, m in batch]
-            for sample in tqdm(calib, desc="  calib-fp", leave=False):
-                run_sample(sample)
-                fp_samples.append(sample)
+            reference_context = (
+                _temporarily_disable_runtime_quantization(model)
+                if paired_disable_reference_quantization
+                else nullcontext()
+            )
+            with reference_context:
+                for sample in tqdm(calib, desc="  calib-fp", leave=False):
+                    run_sample(sample)
+                    fp_samples.append(sample)
             if not fp_samples:
                 raise RuntimeError("All calibration samples failed or no samples provided.")
             for h in handles:
                 h.remove()
-            restore_cached_weights(quant_weight_cache)
+            restore_quantized_path(batch[0][0])
 
             cursor = {"idx": 0}
 
@@ -352,11 +435,23 @@ def collect_and_encode_awq_style(
                 return hook
 
             handles = [m.register_forward_hook(mk_quant_hook(n)) for n, m in batch]
-            for idx, sample in enumerate(
-                tqdm(fp_samples, desc="  calib-quant", leave=False)
-            ):
-                cursor["idx"] = idx
-                run_sample(sample)
+            quantized_context = (
+                _temporarily_disable_runtime_quantization(
+                    model,
+                    enabled_block=_module_block_key(batch[0][0]),
+                )
+                if (
+                    paired_reset_by_block
+                    and paired_disable_reference_quantization
+                )
+                else nullcontext()
+            )
+            with quantized_context:
+                for idx, sample in enumerate(
+                    tqdm(fp_samples, desc="  calib-quant", leave=False)
+                ):
+                    cursor["idx"] = idx
+                    run_sample(sample)
             for h in handles:
                 h.remove()
             fp_inputs.clear()
@@ -395,3 +490,6 @@ def collect_and_encode_awq_style(
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    if paired_full_precision:
+        restore_cached_weights(quant_weight_cache)

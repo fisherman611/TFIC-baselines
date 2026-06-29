@@ -170,16 +170,23 @@ def load_awq_layer_params(path: str | None, args=None) -> dict[str, dict]:
     if args is None:
         return params
 
-    skip_group_size_check = getattr(args, "assignment", None) == "qronus"
     for layer_name, info in params.items():
         expected_fields = [
             ("bits", args.bits),
+            ("group_size", args.group_size),
             ("scheme", args.scheme),
         ]
-        if not skip_group_size_check:
-            expected_fields.insert(1, ("group_size", args.group_size))
         for field, expected in expected_fields:
             actual = info.get(field)
+            if (
+                field == "group_size"
+                and getattr(args, "assignment", None) == "qronus"
+                and actual is None
+            ):
+                raise ValueError(
+                    f"AWQ artifact for {layer_name!r} must record "
+                    "group_size=-1 for Qronus"
+                )
             if actual is not None and actual != expected:
                 raise ValueError(
                     f"AWQ artifact mismatch for {layer_name!r}: "
@@ -200,6 +207,24 @@ def effective_weight_group_size(args, weights: torch.Tensor) -> int:
     if getattr(args, "assignment", None) == "qronus":
         return int(weights.shape[1])
     return int(args.group_size)
+
+
+def apply_qronus_paper_preset(args):
+    """Apply and validate the Qronus preset experiment settings."""
+
+    if getattr(args, "qronus_paper_preset", False):
+        if args.assignment != "qronus":
+            raise ValueError("--qronus-paper-preset requires --assignment qronus")
+        args.calib_dataset = "c4"
+        args.n_calib = 128
+        args.seqlen = 2048
+        args.group_size = -1
+        args.qronus_act_order = True
+    if args.assignment == "qronus" and args.group_size != -1:
+        raise ValueError(
+            "Qronus requires --group-size -1 for the paper's per-output-channel grid"
+        )
+    return args
 
 
 def load_flatquant_diag_params(path: str | None) -> dict[str, dict[str, torch.Tensor]]:
@@ -586,6 +611,20 @@ def parse_args():
         default=True,
         help="Process Qronus columns in descending Hessian diagonal order.",
     )
+    parser.add_argument(
+        "--qronus-cache-dtype",
+        choices=["float16", "bfloat16", "float32"],
+        default="bfloat16",
+        help="CPU dtype for Qronus reference activations.",
+    )
+    parser.add_argument(
+        "--qronus-paper-preset",
+        action="store_true",
+        help=(
+            "Use the Qronus preset: C4, 128x2048 calibration, "
+            "per-output-channel grid, and descending Hessian order."
+        ),
+    )
 
     parser.add_argument("--flexround-steps", type=int, default=5000)
     parser.add_argument("--flexround-lr", type=float, default=3e-3)
@@ -622,7 +661,7 @@ def parse_args():
 
 
 def main():
-    args = parse_args()
+    args = apply_qronus_paper_preset(parse_args())
     torch.manual_seed(args.seed)
 
     input_device = args.input_device
@@ -799,11 +838,16 @@ def main():
     # This avoids materializing per-layer d x d Gram matrices and provides a
     # practical one-pass smoke path. Full benchmark runs should keep k > 0.
     keep_sigma = args.assignment in KEEP_SIGMA
-    gptaq_cache_dtype = {
+    cache_dtypes = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
-    }[args.gptaq_cache_dtype]
+    }
+    paired_cache_dtype = cache_dtypes[
+        args.qronus_cache_dtype
+        if args.assignment == "qronus"
+        else args.gptaq_cache_dtype
+    ]
 
     def callback(layer_name, module, stats):
         weights = module.weight.data
@@ -875,7 +919,9 @@ def main():
         stats_device=args.stats_device,
         max_layers=args.max_layers,
         paired_full_precision=args.assignment in PAIRED_ASSIGNMENTS,
-        paired_cache_dtype=gptaq_cache_dtype,
+        paired_cache_dtype=paired_cache_dtype,
+        paired_reset_by_block=args.assignment == "qronus",
+        paired_disable_reference_quantization=args.assignment == "qronus",
     )
 
     if args.no_save:

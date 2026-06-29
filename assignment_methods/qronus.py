@@ -104,11 +104,15 @@ class QronusAssignment:
         # G = X_tilde^T X. The paired accumulator stores
         # (X - X_tilde)^T X_tilde, so transpose it before adding to H.
         cross_hessian = hessian + delta_cross.t()
+        raw_hessian = hessian.clone()
+        raw_cross_hessian = cross_hessian.clone()
 
         diagonal_idx = torch.arange(padded_in, device=device)
         if self.alpha > 0:
             spectral_norm = torch.linalg.eigvalsh(hessian).amax().clamp_min(0)
-            hessian[diagonal_idx, diagonal_idx] += self.alpha * spectral_norm
+            damping = self.alpha * spectral_norm
+            hessian[diagonal_idx, diagonal_idx] += damping
+            cross_hessian[diagonal_idx, diagonal_idx] += damping
 
         inverse_permutation = None
         if self.act_order:
@@ -119,6 +123,8 @@ class QronusAssignment:
             zero_point = zero_point[:, permutation]
             hessian = hessian[permutation][:, permutation]
             cross_hessian = cross_hessian[permutation][:, permutation]
+            raw_hessian = raw_hessian[permutation][:, permutation]
+            raw_cross_hessian = raw_cross_hessian[permutation][:, permutation]
 
         codes = torch.empty_like(weights)
         qmin = float(grid.qmin)
@@ -129,7 +135,7 @@ class QronusAssignment:
             return output, self._info(grid, codes)
 
         if padded_in == 1:
-            first_values = (weights @ cross_hessian[0]) / hessian[0, 0]
+            first_values = (weights @ raw_cross_hessian[0]) / raw_hessian[0, 0]
             codes[:, 0] = self._quantize_column(
                 first_values,
                 scale[:, 0],
@@ -139,9 +145,9 @@ class QronusAssignment:
             )
         else:
             first_values = (
-                weights @ cross_hessian[0]
-                - weights[:, 1:] @ hessian[0, 1:]
-            ) / hessian[0, 0]
+                weights @ raw_cross_hessian[0]
+                - weights[:, 1:] @ raw_hessian[0, 1:]
+            ) / raw_hessian[0, 0]
             codes[:, 0] = self._quantize_column(
                 first_values,
                 scale[:, 0],
@@ -151,7 +157,7 @@ class QronusAssignment:
             )
             first_dequantized = (codes[:, 0] - zero_point[:, 0]) * scale[:, 0]
             rhs = weights @ cross_hessian[1:].t()
-            rhs -= first_dequantized.unsqueeze(1) * hessian[1:, 0].unsqueeze(0)
+            rhs -= first_dequantized.unsqueeze(1) * raw_hessian[1:, 0].unsqueeze(0)
             weights[:, 1:] = torch.linalg.solve(hessian[1:, 1:], rhs.t()).t()
 
         if padded_in > 1:
