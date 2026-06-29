@@ -17,9 +17,10 @@ The fake-quantized weight follows the official parameterization:
                     qmin - zero_point, qmax - zero_point)
     W_hat    = q_signed * exp(delta1)
 
-``delta1`` is initialized from the selected grid scale and is learnable by
-default, matching the original code.  Set ``learn_layer_scale=False`` to recover
-the older fixed-grid assignment-only behavior.
+``delta1`` is initialized from per-output-channel qparams and is learnable by
+default, matching the LLM setting in the original paper.  Set
+``learn_layer_scale=False`` to keep that per-channel scale fixed while learning
+only the FlexRound divisors.
 """
 
 from __future__ import annotations
@@ -80,6 +81,21 @@ class FlexRoundAssignment:
         self.learn_row_scale = learn_row_scale
         self.work_dtype = work_dtype
 
+    @staticmethod
+    def _store_channel_qparams(
+        grid,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        dequant_column_scale: torch.Tensor,
+    ) -> None:
+        effective_scale = scale / dequant_column_scale
+        grid.scale.data.copy_(
+            effective_scale.expand_as(grid.scale).to(grid.scale.dtype)
+        )
+        grid.zero_point.data.copy_(
+            zero_point.expand_as(grid.zero_point).to(grid.zero_point.dtype)
+        )
+
     def _fake_quantize(
         self,
         weights: torch.Tensor,
@@ -87,6 +103,7 @@ class FlexRoundAssignment:
         zero_point: torch.Tensor,
         log_element_divisor: torch.Tensor,
         log_row_scale: torch.Tensor | None,
+        dequant_column_scale: torch.Tensor,
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -104,7 +121,8 @@ class FlexRoundAssignment:
             qmin - zero_point,
             qmax - zero_point,
         )
-        return signed_codes + zero_point, signed_codes * torch.exp(log_delta1)
+        dequantized = signed_codes * torch.exp(log_delta1) / dequant_column_scale
+        return signed_codes + zero_point, dequantized
 
     @staticmethod
     def _reconstruction_loss(
@@ -138,15 +156,48 @@ class FlexRoundAssignment:
         device = grid.float_weights.device
         dtype = self.work_dtype
         padded_weights = grid.float_weights.detach().to(device=device, dtype=dtype)
-        scale = grid.scale.detach().to(device=device, dtype=dtype)
-        zero_point = grid.zero_point.detach().to(device=device, dtype=dtype)
+        awq_scales = getattr(grid, "awq_scales", None)
+        if awq_scales is None:
+            quantized_source = padded_weights
+            dequant_column_scale = torch.ones(
+                1,
+                padded_weights.shape[1],
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            dequant_column_scale = awq_scales.detach().to(device=device, dtype=dtype)
+            quantized_source = grid.scaled_weights.detach().to(
+                device=device,
+                dtype=dtype,
+            )
+        if grid.scheme not in {"symmetric", "asymmetric"}:
+            raise ValueError(
+                f"FlexRound requires symmetric/asymmetric grids, got {grid.scheme!r}"
+            )
+        scale, zero_point = _channelwise_qparams(
+            quantized_source,
+            bits=grid.bits,
+            symmetric=grid.scheme == "symmetric",
+        )
+        scale = scale.to(device=device, dtype=dtype)
+        zero_point = zero_point.to(device=device, dtype=dtype)
         diagonal = stats.D.detach().to(device=device, dtype=dtype)
         low_rank = stats.V.detach().to(device=device, dtype=dtype)
         target = padded_weights[:, : grid.in_features]
 
         with torch.no_grad():
-            rtn_codes = grid.quantize().to(device=device, dtype=dtype)
-            rtn_dequantized = (rtn_codes - zero_point) * scale
+            zero_element_scale = torch.zeros_like(quantized_source)
+            rtn_codes, rtn_dequantized = self._fake_quantize(
+                quantized_source,
+                scale.log(),
+                zero_point,
+                zero_element_scale,
+                None,
+                dequant_column_scale,
+                grid.qmin,
+                grid.qmax,
+            )
             initial_loss_tensor = self._reconstruction_loss(
                 target,
                 rtn_dequantized[:, : grid.in_features],
@@ -156,7 +207,13 @@ class FlexRoundAssignment:
             initial_loss = float(initial_loss_tensor.item())
 
         if self.steps == 0:
-            output = grid.dequantize(rtn_codes).to(grid.original_dtype)
+            self._store_channel_qparams(
+                grid,
+                scale,
+                zero_point,
+                dequant_column_scale,
+            )
+            output = rtn_dequantized[:, : grid.in_features].to(grid.original_dtype)
             return output, self._info(
                 grid,
                 rtn_codes,
@@ -181,7 +238,7 @@ class FlexRoundAssignment:
                 )
             )
             parameters.append(log_row_scale)
-        log_element_scale = torch.nn.Parameter(torch.zeros_like(padded_weights))
+        log_element_scale = torch.nn.Parameter(torch.zeros_like(quantized_source))
         parameters.append(log_element_scale)
 
         optimizer = torch.optim.Adam(parameters, lr=self.lr)
@@ -197,11 +254,12 @@ class FlexRoundAssignment:
             for step in range(1, self.steps + 1):
                 optimizer.zero_grad(set_to_none=True)
                 codes, dequantized = self._fake_quantize(
-                    padded_weights,
+                    quantized_source,
                     log_delta1,
                     zero_point,
                     log_element_scale,
                     log_row_scale,
+                    dequant_column_scale,
                     grid.qmin,
                     grid.qmax,
                 )
@@ -222,11 +280,12 @@ class FlexRoundAssignment:
 
             with torch.no_grad():
                 final_codes, final_dequantized = self._fake_quantize(
-                    padded_weights,
+                    quantized_source,
                     log_delta1,
                     zero_point,
                     log_element_scale,
                     log_row_scale,
+                    dequant_column_scale,
                     grid.qmin,
                     grid.qmax,
                 )
@@ -242,10 +301,17 @@ class FlexRoundAssignment:
                     raise RuntimeError("FlexRound produced non-finite final weights")
 
         final_codes = final_codes.detach()
-        if self.learn_layer_scale:
-            grid.scale.data = torch.exp(log_delta1.detach()).to(grid.scale.dtype)
+        final_scale = torch.exp(log_delta1.detach())
+        self._store_channel_qparams(
+            grid,
+            final_scale,
+            zero_point,
+            dequant_column_scale,
+        )
 
-        output = grid.dequantize(final_codes).to(grid.original_dtype)
+        output = final_dequantized[:, : grid.in_features].detach().to(
+            grid.original_dtype
+        )
         info = self._info(
             grid,
             final_codes,

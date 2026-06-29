@@ -204,7 +204,7 @@ def load_awq_layer_params(path: str | None, args=None) -> dict[str, dict]:
 def effective_weight_group_size(args, weights: torch.Tensor) -> int:
     """Return the layer-local weight group size for the requested assignment."""
 
-    if getattr(args, "assignment", None) == "qronus":
+    if int(args.group_size) == -1:
         return int(weights.shape[1])
     return int(args.group_size)
 
@@ -421,7 +421,7 @@ def parse_args():
         "--group-size",
         type=int,
         default=128,
-        help="Weight group size. For assignment=qronus, -1 denotes per-channel.",
+        help="Weight group size. Use -1 for per-output-channel weight qparams.",
     )
     parser.add_argument("--awq-scales-pt", default=None)
     parser.add_argument(
@@ -887,7 +887,9 @@ def main():
         del grid, corrected
 
     effective_group_size = (
-        "per-channel" if args.assignment == "qronus" else str(args.group_size)
+        "per-channel"
+        if args.assignment in {"flexround", "qronus"}
+        else str(args.group_size)
     )
     print(
         "quantizing",

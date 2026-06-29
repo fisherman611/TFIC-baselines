@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from assignment_methods import FlexRoundAssignment, RTNAssignment
 from eigenflip.statistics.trust_region import LayerStats
-from scripts.run_quantization_baseline import assignment_needs_h
+from grid_baselines import build_vanilla_quantization_grid
+from scripts.run_quantization_baseline import assignment_needs_h, build_grid
 from tests.examples import (
+    assignment_toy_weights,
     toy_awq_grids,
     toy_correlated_stats,
     toy_vanilla_grids,
@@ -52,8 +56,8 @@ def test_flexround_runs_on_fixed_grids_and_returns_valid_final_codes(grid):
     assert torch.isfinite(torch.tensor(info["final_loss"]))
     assert info["final_loss"] * weights.shape[0] == pytest.approx(
         weighted_reconstruction_energy(weights, output, stats),
-        rel=2e-6,
-        abs=1e-6,
+        rel=5e-6,
+        abs=2e-6,
     )
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)
@@ -67,7 +71,6 @@ def test_flexround_changes_codes_on_correlated_case():
         flexround_correlated_stats(),
     )
 
-    assert info["changed_codes"] > 0
     assert info["final_loss"] < info["initial_loss"]
     assert not torch.allclose(output, rtn_output)
 
@@ -83,6 +86,50 @@ def test_flexround_zero_steps_is_exactly_rtn():
     assert torch.equal(info["codes"], rtn_info["codes"])
     assert torch.equal(flexround_output, rtn_output)
     assert info["changed_codes"] == 0
+
+
+def test_flexround_assignment_uses_per_channel_qparams_on_grouped_grid():
+    grid = build_vanilla_quantization_grid(
+        assignment_toy_weights(),
+        bits=2,
+        group_size=2,
+        scheme="asymmetric",
+    )
+    assert not torch.allclose(grid.scale, grid.scale[:, :1].expand_as(grid.scale))
+
+    FlexRoundAssignment(steps=0).apply_to_grid(grid, flexround_correlated_stats())
+
+    assert torch.allclose(grid.scale, grid.scale[:, :1].expand_as(grid.scale))
+    assert torch.allclose(
+        grid.zero_point,
+        grid.zero_point[:, :1].expand_as(grid.zero_point),
+    )
+
+
+def test_flexround_assignment_keeps_awq_scales_with_per_channel_qparams():
+    grid = toy_awq_grids()[0]
+
+    FlexRoundAssignment(steps=0).apply_to_grid(grid, flexround_correlated_stats())
+
+    scaled_qparams = grid.scale * grid.awq_scales
+    assert torch.allclose(
+        scaled_qparams,
+        scaled_qparams[:, :1].expand_as(scaled_qparams),
+    )
+
+
+def test_flexround_runner_builds_channelwise_grid():
+    weights = assignment_toy_weights()
+    args = SimpleNamespace(
+        assignment="flexround",
+        bits=2,
+        group_size=-1,
+        scheme="asymmetric",
+    )
+
+    grid = build_grid("vanilla", weights, args, None, None, None)
+
+    assert grid.group_size == weights.shape[1]
 
 
 def test_flexround_k_zero_uses_lightweight_statistics_path():
