@@ -20,6 +20,7 @@ from baseline_utils.wandb import log_to_wandb, wandb_enabled_from_env
 from eigenflip.statistics.collect_fast import _resolve_input_device
 from assignment_methods.flexround import (
     FlexRoundCalibrationConfig,
+    apply_flexround_artifact,
     calibrate_flexround_block,
 )
 from scripts.calibrate_flatquant import capture_first_layer_inputs, model_identity
@@ -58,6 +59,17 @@ def parse_args():
     parser.add_argument("--iters", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=3e-3)
+    parser.add_argument(
+        "--propagate-quantized-inputs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Feed each optimized quantized block's output to the next block.",
+    )
+    parser.add_argument(
+        "--save-model-dir",
+        default=None,
+        help="Optionally save the calibrated Hugging Face checkpoint here.",
+    )
     parser.add_argument("--calib-dataset", choices=["c4", "wikitext2"], default="c4")
     parser.add_argument("--n-calib", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -109,6 +121,7 @@ def main():
         iters=args.iters,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        propagate_quantized_inputs=args.propagate_quantized_inputs,
     )
     identity = model_identity(model, args.model_path)
     artifact = {
@@ -149,7 +162,14 @@ def main():
             {prefix + name: values for name, values in local_artifact.items()}
         )
         artifact["history"][str(index)] = history
+        apply_flexround_artifact(block, local_artifact)
         torch.save(artifact, out_path)
+
+    if args.save_model_dir:
+        model_out = Path(args.save_model_dir)
+        model_out.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(model_out)
+        tokenizer.save_pretrained(model_out)
 
     summary_path = out_path.with_suffix(".json")
     summary_path.write_text(
@@ -159,6 +179,7 @@ def main():
                 "model": identity,
                 "calibration": artifact["calibration"],
                 "optimization": artifact["optimization"],
+                "model_checkpoint": args.save_model_dir,
                 "final_loss_by_block": {
                     key: values[-1] for key, values in artifact["history"].items()
                 },

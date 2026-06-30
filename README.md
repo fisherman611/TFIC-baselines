@@ -111,9 +111,11 @@ methods operate on the exact coordinates consumed by each path. Use
 pipeline smoke/debug runs; it is not the learned SpinQuant baseline.
 `python -m scripts.calibrate_spinquant` calibrates repository-native R1/R2 rotation
 artifacts on calibration data with a full fake-quantized model cross-entropy
-objective by default; its defaults match this project's C4/128/2048 setting
-and save a loader-compatible `--spinquant-rotations-pt` file. Use
-`--objective reconstruction` only for the older local linear MSE debug path.
+objective by default, starting from random-signed Hadamard rotations. Its
+defaults match this project's C4/128/2048 setting and save a loader-compatible
+`--spinquant-rotations-pt` file. Use `--rotation-init identity` or
+`--rotation-init random` only for ablations, and use `--objective reconstruction`
+only for the older local linear MSE debug path.
 For non-power-of-two intermediate widths in `spinquant_had`, pass
 `--spinquant-r4-pt` containing the official `had_K` and `K`. Use
 `--activation-bits`, `--v-bits`, and
@@ -143,9 +145,11 @@ stats = stats_from_paired_inputs(x_quantized, x_full_precision)
 weights, info = GPTAQAssignment(
     damp=0.01,
     block_size=128,
-    alpha=0.25,
 ).apply_to_grid(grid, stats)
 ```
+
+The default `alpha=1.0` applies the asymmetric correction exactly as written
+in GPTAQ Algorithm 1. `--gptaq-alpha` remains available for ablations.
 
 Assignment-level smoke test:
 
@@ -395,8 +399,16 @@ uv run python -m scripts.calibrate_flexround \
   --n-calib 128 \
   --seqlen 2048 \
   --iters 5000 \
-  --learning-rate 3e-3
+  --batch-size 4 \
+  --learning-rate 3e-3 \
+  --save-model-dir ./quantized_models/flexround_llama31_8b_w4
 ```
+
+This is the preferred FlexRound path: it learns `delta1`, `delta2`, and
+`delta3` jointly against block-output MSE, applies the exported weights back to
+the model, and propagates optimized quantized outputs into the next block.
+The saved checkpoint can be evaluated directly. This remains weight-only;
+the paper's QDrop activation-quantization schedule is not implemented.
 
 Full affine FlatQuant + GPTQ on the project grid:
 
@@ -454,7 +466,9 @@ uv run python -m scripts.run_quantization_baseline \
 For a quick pipeline check, lower `--flexround-steps`; use 5000 for the paper's
 reconstruction-step budget. `--no-flexround-row-scale` disables the additional
 output-channel factor, and `--no-flexround-learn-layer-scale` disables learned
-`delta1`. The full runner exposes the same settings through
+`delta1` and now preserves the selected grid exactly. This runner path uses the
+low-rank layer surrogate and is an assignment ablation, not the preferred
+block-reconstruction reproduction. The full runner exposes the same settings through
 `FLEXROUND_STEPS`, `FLEXROUND_LR`, and `FLEXROUND_LOG_DIVISOR_BOUND`.
 
 FlatQuant diagonal-scale grid + RTN:

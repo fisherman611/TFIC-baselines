@@ -14,7 +14,7 @@ from .spinquant_quantization_grid import (
     cayley_update,
     fuse_spinquant_norms,
 )
-from .transformed_linear import fake_quantize_activation
+from .transformed_linear import apply_factorized_hadamard, fake_quantize_activation
 
 
 @dataclass
@@ -48,6 +48,51 @@ def identity_spinquant_rotations(
     return SpinQuantRotations(
         R1=torch.eye(hidden_size, dtype=torch.float64),
         R2={idx: torch.eye(head_dim, dtype=torch.float64) for idx in range(num_layers)},
+    )
+
+
+def _random_signed_hadamard(size: int, generator: torch.Generator) -> torch.Tensor:
+    if size <= 0 or size & (size - 1):
+        raise ValueError(
+            "Hadamard SpinQuant initialization requires power-of-two dimensions; "
+            "use rotation_init='random' or 'identity' for this model"
+        )
+
+    matrix = apply_factorized_hadamard(
+        torch.eye(size, dtype=torch.float64),
+        had_k=None,
+        k=1,
+    )
+    signs = torch.randint(
+        0,
+        2,
+        (size,),
+        generator=generator,
+        dtype=torch.int64,
+    ).to(torch.float64)
+    signs = signs.mul_(2).sub_(1)
+    return (matrix * signs.unsqueeze(0)).contiguous()
+
+
+def hadamard_spinquant_rotations(
+    *,
+    num_layers: int,
+    hidden_size: int,
+    head_dim: int,
+    seed: int = 0,
+) -> SpinQuantRotations:
+    """Generate random-signed Hadamard R1/R2 rotations for SpinQuant init."""
+
+    if num_layers <= 0:
+        raise ValueError("num_layers must be positive")
+
+    generator = torch.Generator().manual_seed(seed)
+    return SpinQuantRotations(
+        R1=_random_signed_hadamard(hidden_size, generator),
+        R2={
+            idx: _random_signed_hadamard(head_dim, generator)
+            for idx in range(num_layers)
+        },
     )
 
 

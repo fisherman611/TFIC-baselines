@@ -118,6 +118,22 @@ def test_flexround_assignment_keeps_awq_scales_with_per_channel_qparams():
     )
 
 
+@pytest.mark.parametrize("grid", toy_vanilla_grids() + toy_awq_grids())
+def test_flexround_fixed_grid_mode_preserves_qparams(grid):
+    initial_scale = grid.scale.clone()
+    initial_zero_point = grid.zero_point.clone()
+
+    _output, info = FlexRoundAssignment(
+        steps=2,
+        lr=1e-3,
+        learn_layer_scale=False,
+    ).apply_to_grid(grid, flexround_correlated_stats())
+
+    assert info["variant"] == "fixed_grid_surrogate"
+    assert torch.equal(grid.scale, initial_scale)
+    assert torch.equal(grid.zero_point, initial_zero_point)
+
+
 def test_flexround_runner_builds_channelwise_grid():
     weights = assignment_toy_weights()
     args = SimpleNamespace(

@@ -48,6 +48,7 @@ from .spinquant_quantization_grid import (
 from .spinquant_calibration import (
     SpinQuantCalibrationConfig,
     capture_spinquant_layer_inputs,
+    hadamard_spinquant_rotations,
     identity_spinquant_rotations,
     calibrate_spinquant_cross_entropy,
     calibrate_spinquant_layer_rotations,
@@ -77,6 +78,7 @@ __all__ = [
     'random_spinquant_rotations',
     'SpinQuantCalibrationConfig',
     'capture_spinquant_layer_inputs',
+    'hadamard_spinquant_rotations',
     'identity_spinquant_rotations',
     'calibrate_spinquant_cross_entropy',
     'calibrate_spinquant_layer_rotations',

@@ -72,7 +72,7 @@ class GPTAQAssignment:
         *,
         damp: float = 0.01,
         block_size: int = 128,
-        alpha: float = 0.25,
+        alpha: float = 1.0,
         act_order: bool = False,
         work_dtype: torch.dtype = torch.float64,
     ):

@@ -175,11 +175,18 @@ class FlexRoundAssignment:
             raise ValueError(
                 f"FlexRound requires symmetric/asymmetric grids, got {grid.scheme!r}"
             )
-        scale, zero_point = _channelwise_qparams(
-            quantized_source,
-            bits=grid.bits,
-            symmetric=grid.scheme == "symmetric",
-        )
+        if self.learn_layer_scale:
+            scale, zero_point = _channelwise_qparams(
+                quantized_source,
+                bits=grid.bits,
+                symmetric=grid.scheme == "symmetric",
+            )
+        else:
+            # Keep the selected grid exactly fixed. AWQ grids store their
+            # effective dequantization scale after undoing the activation-aware
+            # column scaling, so recover the source-domain scale here.
+            scale = grid.scale.detach() * dequant_column_scale
+            zero_point = grid.zero_point.detach()
         scale = scale.to(device=device, dtype=dtype)
         zero_point = zero_point.to(device=device, dtype=dtype)
         diagonal = stats.D.detach().to(device=device, dtype=dtype)
@@ -207,12 +214,13 @@ class FlexRoundAssignment:
             initial_loss = float(initial_loss_tensor.item())
 
         if self.steps == 0:
-            self._store_channel_qparams(
-                grid,
-                scale,
-                zero_point,
-                dequant_column_scale,
-            )
+            if self.learn_layer_scale:
+                self._store_channel_qparams(
+                    grid,
+                    scale,
+                    zero_point,
+                    dequant_column_scale,
+                )
             output = rtn_dequantized[:, : grid.in_features].to(grid.original_dtype)
             return output, self._info(
                 grid,
@@ -302,12 +310,13 @@ class FlexRoundAssignment:
 
         final_codes = final_codes.detach()
         final_scale = torch.exp(log_delta1.detach())
-        self._store_channel_qparams(
-            grid,
-            final_scale,
-            zero_point,
-            dequant_column_scale,
-        )
+        if self.learn_layer_scale:
+            self._store_channel_qparams(
+                grid,
+                final_scale,
+                zero_point,
+                dequant_column_scale,
+            )
 
         output = final_dequantized[:, : grid.in_features].detach().to(
             grid.original_dtype
@@ -337,7 +346,11 @@ class FlexRoundAssignment:
         total = actual_codes.numel()
         return {
             "assignment": self.name,
-            "variant": self.variant,
+            "variant": (
+                self.variant
+                if self.learn_layer_scale
+                else "fixed_grid_surrogate"
+            ),
             "grid_scheme": grid.scheme,
             "codes": final_codes.detach(),
             "steps": self.steps,
@@ -459,6 +472,47 @@ class FlexRoundCalibrationConfig:
     iters: int = 5000
     batch_size: int = 1
     learning_rate: float = 3e-3
+    propagate_quantized_inputs: bool = True
+
+
+@torch.no_grad()
+def apply_flexround_artifact(
+    block: nn.Module,
+    artifact: dict[str, dict[str, torch.Tensor]],
+    *,
+    strict: bool = True,
+) -> None:
+    """Apply exported FlexRound weights to their source linear modules."""
+
+    expected = {
+        name
+        for name, module in block.named_modules()
+        if isinstance(module, nn.Linear)
+        and name.endswith(
+            ("q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "gate_proj", "down_proj")
+        )
+    }
+    provided = set(artifact)
+    if strict and provided != expected:
+        missing = sorted(expected - provided)
+        unexpected = sorted(provided - expected)
+        raise ValueError(
+            "FlexRound artifact layer mismatch: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    for name in sorted(expected & provided):
+        module = block.get_submodule(name)
+        weight = artifact[name].get("weight")
+        if weight is None:
+            raise ValueError(f"FlexRound artifact for {name!r} has no weight")
+        if tuple(weight.shape) != tuple(module.weight.shape):
+            raise ValueError(
+                f"FlexRound weight shape mismatch for {name!r}: "
+                f"artifact={tuple(weight.shape)}, model={tuple(module.weight.shape)}"
+            )
+        module.weight.data.copy_(
+            weight.to(device=module.weight.device, dtype=module.weight.dtype)
+        )
 
 
 def prepare_flexround_block(
@@ -500,7 +554,12 @@ def calibrate_flexround_block(
     config: FlexRoundCalibrationConfig,
     device: torch.device | str,
 ) -> tuple[dict[str, dict[str, torch.Tensor]], list[torch.Tensor], list[float]]:
-    """Optimize one decoder block with cached block reconstruction loss."""
+    """Optimize one decoder block with cached block reconstruction loss.
+
+    The returned inputs are produced by the optimized quantized block by
+    default, so sequential calibration propagates the quantized path. Set
+    ``propagate_quantized_inputs=False`` to retain teacher-output propagation.
+    """
     if len(inputs) != len(block_kwargs) or not inputs:
         raise ValueError("inputs and block_kwargs must be non-empty and aligned")
     if config.iters <= 0 or config.batch_size <= 0:
@@ -562,4 +621,20 @@ def calibrate_flexround_block(
             break
 
     artifacts = {name: wrapper.export() for name, wrapper in wrappers.items()}
-    return artifacts, targets, history
+    if config.propagate_quantized_inputs:
+        next_inputs = []
+        quantized.eval()
+        with torch.no_grad():
+            for hidden, kwargs in zip(inputs, block_kwargs):
+                next_inputs.append(
+                    _block_output(
+                        quantized,
+                        hidden.to(device),
+                        _move_tree(kwargs, device),
+                    )
+                    .detach()
+                    .cpu()
+                )
+    else:
+        next_inputs = targets
+    return artifacts, next_inputs, history

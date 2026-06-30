@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from assignment_methods.flexround import (  # noqa: E402
     FlexRoundCalibrationConfig,
+    apply_flexround_artifact,
     calibrate_flexround_block,
 )
 
@@ -56,6 +57,7 @@ class _ToyBlock(nn.Module):
 def test_flexround_block_calibration_exports_official_quantizer_params():
     torch.manual_seed(0)
     inputs = [torch.randn(1, 3, 4) for _ in range(3)]
+    block = _ToyBlock()
     config = FlexRoundCalibrationConfig(
         weight_bits=4,
         weight_symmetric=False,
@@ -64,7 +66,7 @@ def test_flexround_block_calibration_exports_official_quantizer_params():
         learning_rate=1e-3,
     )
     artifact, outputs, history = calibrate_flexround_block(
-        _ToyBlock(),
+        block,
         inputs,
         [{}, {}, {}],
         config=config,
@@ -81,3 +83,37 @@ def test_flexround_block_calibration_exports_official_quantizer_params():
         assert values["weight"].shape == values["codes"].shape
         assert values["delta2"].shape == values["weight"].shape
         assert values["delta3"].shape == values["weight"][:, :1].shape
+
+    apply_flexround_artifact(block, artifact)
+    for name, values in artifact.items():
+        assert torch.equal(
+            block.get_submodule(name).weight,
+            values["weight"].to(block.get_submodule(name).weight),
+        )
+    with torch.no_grad():
+        applied_outputs = [block(values)[0] for values in inputs]
+    for actual, expected in zip(outputs, applied_outputs):
+        assert torch.allclose(actual, expected)
+
+
+def test_flexround_can_retain_teacher_output_propagation():
+    torch.manual_seed(0)
+    block = _ToyBlock()
+    inputs = [torch.randn(1, 3, 4)]
+    with torch.no_grad():
+        expected = block(inputs[0])[0]
+    config = FlexRoundCalibrationConfig(
+        weight_bits=4,
+        iters=1,
+        propagate_quantized_inputs=False,
+    )
+
+    _artifact, outputs, _history = calibrate_flexround_block(
+        block,
+        inputs,
+        [{}],
+        config=config,
+        device="cpu",
+    )
+
+    assert torch.equal(outputs[0], expected)

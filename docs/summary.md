@@ -423,7 +423,7 @@ GPTAQ extends GPTQ with paired asymmetric calibration statistics:
 ```text
 H = E[X_quant^T X_quant]
 dXXT = E[(X_fp - X_quant)^T X_quant]
-P = alpha * triu(dXXT U^T, diagonal=1) U
+P = triu(dXXT U^T, diagonal=1) U
 ```
 
 Here, `U` is the upper Cholesky factor of the damped inverse Hessian. The
@@ -437,9 +437,11 @@ stats = stats_from_paired_inputs(x_quantized, x_full_precision)
 W_hat, info = GPTAQAssignment(
     damp=0.01,
     block_size=128,
-    alpha=0.25,
 ).apply_to_grid(grid, stats)
 ```
+
+The default `alpha=1.0` is the unscaled correction from Algorithm 1.
+Other values are exposed only as ablations.
 
 When `X_fp == X_quant`, `dXXT = 0`, so GPTAQ reduces exactly to GPTQ. It has no
 RTN fallback and returns the final lazy-block assignments.
@@ -463,7 +465,7 @@ uses:
 
 ```text
 r1 = W^(q) (X_fp - X_quant)
-P1 = alpha * triu(dXXT U^T, diagonal=1) U
+P1 = triu(dXXT U^T, diagonal=1) U
 ```
 
 ResComp additionally accounts for the intra-layer difference between original
@@ -492,10 +494,16 @@ uses the paired whole-model collector.
 
 Status: implemented in `assignment_methods/flexround.py`.
 
-The repository implements FlexRound as an assignment-only method so it can be
-compared fairly across the same fixed Vanilla or AWQ grid. The grid scale and
-zero-point remain unchanged. FlexRound learns a positive divisor for each
-weight and an optional output-channel factor:
+The preferred paper-oriented path is `python -m scripts.calibrate_flexround`.
+It jointly learns the common scale and per-weight/output-channel divisors with
+cached block-output reconstruction, applies the exported quantized weights back
+to the model, propagates the quantized path between blocks, and can save a
+directly evaluable checkpoint with `--save-model-dir`.
+
+`FlexRoundAssignment` remains available as a lower-cost layer-surrogate
+ablation. By default it follows the paper and learns the common scale. Passing
+`learn_layer_scale=False` keeps the selected Vanilla/AWQ scale and zero-point
+exactly fixed while learning only the divisors:
 
 ```text
 S = exp(log_S_element + log_S_row)
@@ -546,7 +554,8 @@ W_hat, info = assignment.apply_to_grid(grid, stats)
 The returned `info` contains:
 
 ```text
-variant = fixed_grid_surrogate
+variant = official_quantizer_surrogate  # default, learns common scale
+# or fixed_grid_surrogate when learn_layer_scale=False
 codes
 initial_loss
 final_loss
@@ -558,11 +567,10 @@ The learned divisors are discarded after integer codes are selected. Inference
 stores only the ordinary grid codes, scale, and zero-point, so FlexRound adds no
 per-weight inference metadata.
 
-Important scope note: this is the fixed-grid assignment variant required by
-this repository's `grid x assignment` design. Full FlexRound from the paper
-also learns the quantization grid scale and can reconstruct an entire block.
-Learning the grid scale here would change both the grid and assignment at once,
-so it is deliberately excluded from this baseline.
+Important scope note: the block-calibration path is weight-only. The paper's
+QDrop setup also quantizes activations and randomly drops activation
+quantization during reconstruction; that activation pipeline is not
+implemented here.
 
 ### TFIC
 

@@ -31,6 +31,7 @@ from grid_baselines import (  # noqa: E402
     build_vanilla_quantization_grid,
     cayley_update,
     capture_spinquant_layer_inputs,
+    hadamard_spinquant_rotations,
     identity_spinquant_rotations,
     load_spinquant_rotations,
     random_spinquant_rotations,
@@ -224,6 +225,45 @@ def test_random_spinquant_rotations_are_reproducible_and_orthogonal():
         first.R2[0].t().matmul(first.R2[0]),
         torch.eye(2, dtype=torch.float64),
     )
+
+
+def test_hadamard_spinquant_rotations_are_reproducible_and_orthogonal():
+    first = hadamard_spinquant_rotations(
+        num_layers=2,
+        hidden_size=8,
+        head_dim=2,
+        seed=123,
+    )
+    second = hadamard_spinquant_rotations(
+        num_layers=2,
+        hidden_size=8,
+        head_dim=2,
+        seed=123,
+    )
+    assert torch.equal(first.R1, second.R1)
+    assert torch.equal(first.R2[1], second.R2[1])
+    assert torch.allclose(
+        first.R1.t().matmul(first.R1),
+        torch.eye(8, dtype=torch.float64),
+    )
+    assert torch.allclose(
+        first.R2[0].t().matmul(first.R2[0]),
+        torch.eye(2, dtype=torch.float64),
+    )
+    assert torch.allclose(
+        first.R1.abs(),
+        torch.full_like(first.R1, 1 / (8**0.5)),
+    )
+
+
+def test_hadamard_spinquant_rotations_reject_non_power_of_two_dimensions():
+    with pytest.raises(ValueError, match="power-of-two"):
+        hadamard_spinquant_rotations(
+            num_layers=1,
+            hidden_size=6,
+            head_dim=2,
+            seed=123,
+        )
 
 
 def test_random_spinquant_no_had_preserves_full_precision_model_output():

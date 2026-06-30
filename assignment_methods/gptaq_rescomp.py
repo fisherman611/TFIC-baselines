@@ -16,7 +16,7 @@ class GPTAQResCompAssignment:
         *,
         damp: float = 0.01,
         block_size: int = 128,
-        alpha: float = 0.25,
+        alpha: float = 1.0,
         rescomp_alpha: float = 0.25,
         rescomp_mode: str = "auto",
         act_order: bool = False,
@@ -114,6 +114,7 @@ class GPTAQResCompAssignment:
             hessian = hessian[permutation][:, permutation]
             delta_cross = delta_cross[permutation][:, permutation]
 
+        raw_hessian = hessian.clone()
         diagonal_mean = torch.diagonal(hessian).mean()
         diagonal_idx = torch.arange(padded_in, device=device)
         hessian[diagonal_idx, diagonal_idx] += self.damp * diagonal_mean
@@ -127,7 +128,7 @@ class GPTAQResCompAssignment:
             delta_cross @ inverse_factor.t(), diagonal=1
         ) @ inverse_factor
         rescomp_correction = self.rescomp_alpha * torch.triu(
-            (hessian + delta_cross) @ inverse_factor.t(), diagonal=1
+            (raw_hessian + delta_cross) @ inverse_factor.t(), diagonal=1
         ) @ inverse_factor
 
         codes = torch.zeros_like(weights)

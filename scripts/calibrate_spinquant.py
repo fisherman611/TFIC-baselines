@@ -19,6 +19,7 @@ from eigenflip.statistics.collect_fast import _resolve_input_device
 from grid_baselines.spinquant_calibration import (
     SpinQuantCalibrationConfig,
     capture_spinquant_layer_inputs,
+    hadamard_spinquant_rotations,
     identity_spinquant_rotations,
     summarize_history,
     calibrate_spinquant_cross_entropy,
@@ -89,6 +90,16 @@ def parse_args():
     parser.add_argument("--activation-clip-ratio", type=float, default=1.0)
     parser.add_argument("--r1-steps", type=int, default=100)
     parser.add_argument("--r2-steps", type=int, default=100)
+    parser.add_argument(
+        "--rotation-init",
+        choices=["hadamard", "random", "identity"],
+        default="hadamard",
+        help=(
+            "Initial R1/R2 rotations before Cayley optimization. "
+            "Hadamard uses random-signed Hadamard matrices and is the "
+            "paper-aligned default; identity/random are ablations."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument(
@@ -145,11 +156,21 @@ def main():
     layers = list(model.model.layers)
     layer_count = len(layers) if args.max_layers is None else min(args.max_layers, len(layers))
     head_dim = int(layers[0].self_attn.head_dim)
-    rotations = identity_spinquant_rotations(
+    rotation_kwargs = dict(
         num_layers=len(layers),
         hidden_size=int(model.config.hidden_size),
         head_dim=head_dim,
     )
+    if args.rotation_init == "hadamard":
+        rotations = hadamard_spinquant_rotations(**rotation_kwargs, seed=args.seed)
+    elif args.rotation_init == "random":
+        from grid_baselines.spinquant_quantization_grid import (
+            random_spinquant_rotations,
+        )
+
+        rotations = random_spinquant_rotations(**rotation_kwargs, seed=args.seed)
+    else:
+        rotations = identity_spinquant_rotations(**rotation_kwargs)
     config = SpinQuantCalibrationConfig(
         weight_bits=args.weight_bits,
         weight_group_size=args.weight_group_size,
@@ -183,6 +204,7 @@ def main():
             "seed": args.seed,
         },
         "training": vars(config),
+        "rotation_init": args.rotation_init,
         "R1": rotations.R1,
         "history": {},
     }

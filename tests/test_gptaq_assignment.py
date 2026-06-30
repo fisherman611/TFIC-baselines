@@ -65,6 +65,11 @@ def test_gptaq_paired_stats_match_manual_moments():
     )
 
 
+def test_gptaq_defaults_to_paper_correction_scale():
+    assert GPTAQAssignment().alpha == 1.0
+    assert GPTAQResCompAssignment().alpha == 1.0
+
+
 def test_gptaq_requires_paired_cross_moment():
     grid = toy_vanilla_grids()[0]
     inputs = paired_inputs()
@@ -157,6 +162,50 @@ def test_gptaq_rescomp_runs_on_fixed_grids_and_returns_valid_codes(grid):
     assert torch.all(info["codes"] <= grid.qmax)
 
 
+def test_gptaq_rescomp_p2_uses_raw_hessian_not_damped(monkeypatch):
+    grid = toy_vanilla_grids()[1]
+    quantized = paired_inputs()
+    reference = quantized + 0.25 * torch.flip(quantized, dims=[1])
+    stats = stats_from_paired_inputs(quantized, reference)
+    damp = 0.2
+
+    triu_inputs = []
+    original_triu = torch.triu
+
+    def capture_triu(input, diagonal=0, *args, **kwargs):
+        if len(triu_inputs) < 2:
+            triu_inputs.append(input.detach().clone())
+        return original_triu(input, diagonal=diagonal, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "triu", capture_triu)
+
+    GPTAQResCompAssignment(
+        damp=damp,
+        block_size=2,
+        alpha=0.25,
+        rescomp_alpha=1.0,
+    ).apply_to_grid(grid, stats)
+
+    raw_hessian = stats.Sigma.double() + torch.outer(
+        stats.mu_hat.double(),
+        stats.mu_hat.double(),
+    )
+    delta_cross = stats.delta_cross.double()
+    damped_hessian = raw_hessian.clone()
+    diagonal_idx = torch.arange(raw_hessian.shape[0])
+    damped_hessian[diagonal_idx, diagonal_idx] += (
+        damp * torch.diagonal(raw_hessian).mean()
+    )
+    inverse_hessian = torch.cholesky_inverse(torch.linalg.cholesky(damped_hessian))
+    inverse_factor = torch.linalg.cholesky(inverse_hessian, upper=True)
+
+    expected_raw_p2_input = (raw_hessian + delta_cross) @ inverse_factor.t()
+    damped_p2_input = (damped_hessian + delta_cross) @ inverse_factor.t()
+
+    assert torch.allclose(triu_inputs[1], expected_raw_p2_input)
+    assert not torch.allclose(triu_inputs[1], damped_p2_input)
+
+
 def test_gptaq_rescomp_returns_expected_defaults():
     grid = build_vanilla_quantization_grid(
         torch.tensor(
@@ -177,9 +226,9 @@ def test_gptaq_rescomp_returns_expected_defaults():
     _output, info = GPTAQResCompAssignment(
         damp=0.01,
         block_size=2,
-        alpha=1.0,
     ).apply_to_grid(grid, stats)
 
+    assert info["alpha"] == 1.0
     assert info["rescomp_alpha"] == 0.25
     assert torch.all(info["codes"] >= grid.qmin)
     assert torch.all(info["codes"] <= grid.qmax)

@@ -578,7 +578,15 @@ def parse_args():
 
     parser.add_argument("--gptaq-damp", type=float, default=0.01)
     parser.add_argument("--gptaq-block-size", type=int, default=128)
-    parser.add_argument("--gptaq-alpha", type=float, default=0.25)
+    parser.add_argument(
+        "--gptaq-alpha",
+        type=float,
+        default=1.0,
+        help=(
+            "Scale GPTAQ's asymmetric correction. The paper-exact default is "
+            "1.0; other values are ablations."
+        ),
+    )
     parser.add_argument("--gptaq-act-order", action="store_true")
     parser.add_argument("--rescomp-alpha", type=float, default=0.25)
     parser.add_argument(
